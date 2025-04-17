@@ -6,3 +6,5 @@ Flask-SQLAlchemy>=3.0
 SQLAlchemy>=1.4
 Flask-Migrate>=4.0
 plaid-python>=10.0 # TODO Check the recent version
+PyNaCl>=1.5
+coinbase-advanced-py

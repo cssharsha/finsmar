@@ -1,6 +1,7 @@
 .env
 backend/__pycache__/
 backend/*.pyc
+backend/services/__pycache__/
 frontend/node_modules/
 frontend/build/
 finsmar_postgres_data/
