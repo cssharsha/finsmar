@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: finsmar_backend
+    ports:
+      - "5001:5000" # Host:Container port mapping for backend API
+    volumes:
+      - ./backend:/app # Mount local backend code into /app in container
+    environment:
+      # Loaded from .env file
+      - FLASK_APP=${FLASK_APP}
+      - FLASK_ENV=${FLASK_ENV}
+      - DATABASE_URL=${DATABASE_URL}
+      - PLAID_CLIENT_ID=${PLAID_CLIENT_ID}
+      - PLAID_SECRET=${PLAID_SECRET}
+      - PLAID_ENV=${PLAID_ENV}
+      - ROBINHOOD_API_KEY=${ROBINHOOD_API_KEY} # Placeholder, actual auth may differ
+      - ROBINHOOD_API_SECRET=${ROBINHOOD_API_SECRET} # Placeholder
+      - COINBASE_API_KEY=${COINBASE_API_KEY}
+      - COINBASE_API_SECRET=${COINBASE_API_SECRET}
+      - FINANCIAL_DATA_API_KEY=${FINANCIAL_DATA_API_KEY}
+    depends_on:
+      - db
+    networks:
+      - finsmar_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev # Using a dev-specific Dockerfile
+    container_name: finsmar_frontend
+    ports:
+      - "3000:3000" # React default dev port
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules # Important: Keeps container node_modules separate
+    environment:
+      - CHOKIDAR_USEPOLLING=true # Helps file watching work inside Docker
+      # Pass the backend API URL to the frontend if needed directly
+      # - REACT_APP_API_URL=http://backend:5000 # Example for React
+    depends_on:
+      - backend
+    networks:
+      - finsmar_network
+
+  db:
+    image: postgres:15
+    container_name: finsmar_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - finsmar_postgres_data:/var/lib/postgresql/data # Persistent data volume
+    ports:
+      - "54321:5432" # Optional: Expose DB port to host for direct access
+    networks:
+      - finsmar_network
+
+volumes:
+  finsmar_postgres_data: # Define the named volume
+
+networks:
+  finsmar_network: # Define the network
+    driver: bridge

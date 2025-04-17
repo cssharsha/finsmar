@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "start": "echo 'Frontend not initialized yet. Run Step 7.' && tail -f /dev/null"
+  }
+}

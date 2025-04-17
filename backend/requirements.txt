@@ -1,0 +1,8 @@
+Flask>=2.0 # Or a specific recent version
+python-dotenv>=0.19 # To load environment variables from .env within Flask
+psycopg2-binary>=2.9 # Driver for connecting Flask to PostgreSQL
+requests>=2.20 # For making HTTP requests to Plaid, Robinhood, etc. later
+Flask-SQLAlchemy>=3.0
+SQLAlchemy>=1.4
+Flask-Migrate>=4.0
+plaid-python>=10.0 # TODO Check the recent version

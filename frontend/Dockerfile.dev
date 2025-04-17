@@ -1,0 +1,18 @@
+FROM node:18
+
+WORKDIR /app
+
+COPY package.json yarn.lock ./
+# Or if using npm: COPY package.json package-lock.json ./
+
+RUN yarn install
+# Or if using npm: RUN npm install
+
+COPY . .
+
+# Expose React's default port
+EXPOSE 3000
+
+# Start the development server
+CMD ["yarn", "start"]
+# Or if using npm: CMD ["npm", "start"]
