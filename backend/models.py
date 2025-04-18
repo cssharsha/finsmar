@@ -1,5 +1,5 @@
-# backend/models.py
-from .extensions import db # Import db instance from extensions.py
+from extensions import db # Import db instance from extensions.py
+from sqlalchemy import func
 
 # Define the Account model
 class Account(db.Model):
@@ -45,6 +45,20 @@ class PlaidItem(db.Model):
 
     def __repr__(self):
         return f'<PlaidItem {self.item_id} (User: {self.user_id})>'
+
+class MarketPrice(db.Model):
+    __tablename__ = 'market_price'
+
+    id = db.Column(db.Integer, primary_key=True)
+    # Symbol (e.g., 'AAPL', 'BTC', 'ETH') - should be unique
+    symbol = db.Column(db.String(20), unique=True, nullable=False, index=True)
+    # Store price with sufficient precision
+    price_usd = db.Column(db.Numeric(18, 8), nullable=False)
+    # Track when the price was last successfully updated
+    last_updated = db.Column(db.DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    def __repr__(self):
+        return f'<MarketPrice {self.symbol}: {self.price_usd} @ {self.last_updated}>'
 
 # --- Add more models later ---
 # class Transaction(db.Model): ...

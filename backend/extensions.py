@@ -4,9 +4,9 @@ import plaid
 from plaid.api import plaid_api
 from plaid.model.country_code import CountryCode
 from plaid.model.products import Products
-from .services.robinhood_service import RobinhoodService
-from .services.coinbase_service import CoinbaseService
-from .services.market_data_service import MarketDataService
+from services.robinhood_service import RobinhoodService
+from services.coinbase_service import CoinbaseService
+from services.market_data_service import MarketDataService
 
 # Create extension instances
 db = SQLAlchemy()

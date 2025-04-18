@@ -1,5 +1,5 @@
 # backend/run.py
-from .app import create_app # Import the factory function from app.py
+from app import create_app # Import the factory function from app.py
 
 # Create the application instance using the factory
 app = create_app()

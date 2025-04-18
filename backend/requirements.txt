@@ -9,3 +9,5 @@ plaid-python>=10.0 # TODO Check the recent version
 PyNaCl>=1.5
 coinbase-advanced-py
 Flask-CORS>=3.0
+gunicorn>=20.0 # Add Gunicorn
+APScheduler>=3.9

@@ -1,0 +1,65 @@
+# Production-like configuration for local running
+
+services:
+  backend:
+    build:
+       context: ./backend
+       dockerfile: Dockerfile # Assumes your production backend file is Dockerfile
+    container_name: finsmar_backend_prod
+    ports:
+      - "5001:5000" # Host:Container (Gunicorn binds to 5000 inside)
+    environment:
+      # Ensure all required secrets/configs are passed from .env
+      # FLASK_ENV=production is set inside backend/Dockerfile
+      - FLASK_APP=${FLASK_APP} # Still needed for 'flask db' commands if run via exec
+      - DATABASE_URL=${DATABASE_URL}
+      - PLAID_CLIENT_ID=${PLAID_CLIENT_ID}
+      - PLAID_SECRET=${PLAID_SECRET}
+      - PLAID_ENV=${PLAID_ENV} # Set to 'sandbox' or 'development' for Plaid API target
+      - ROBINHOOD_PRI_KEY=${ROBINHOOD_PRI_KEY}
+      - ROBINHOOD_PUB_KEY=${ROBINHOOD_PUB_KEY}
+      - ROBINHOOD_API_KEY=${ROBINHOOD_API_KEY}
+      - COINBASE_API_KEY=${COINBASE_API_KEY}
+      - COINBASE_API_SECRET=${COINBASE_API_SECRET}
+      - FINANCIAL_DATA_API_KEY=${FINANCIAL_DATA_API_KEY}
+      - SECRET_KEY=${SECRET_KEY} # Pass the Flask secret key
+    depends_on:
+      - db
+    networks:
+      - finsmar_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile # Assumes your production frontend file is Dockerfile
+    container_name: finsmar_frontend_prod
+    ports:
+      - "3000:80" # Host Port 3000 -> Container Port 80 (Nginx default)
+    # No code volumes needed - code is built into the image
+    # No environment variables needed for Nginx serving static files
+    depends_on:
+      - backend # May not be strictly needed, but doesn't hurt
+    networks:
+      - finsmar_network
+
+  db:
+    image: postgres:15
+    container_name: finsmar_db_prod # Use different name if running dev simultaneously
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Keep the named volume to persist data between runs
+      - finsmar_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "54321:5432" # Optional: Expose DB port to host
+    networks:
+      - finsmar_network
+
+volumes:
+  finsmar_postgres_data: # Ensure volume is defined
+
+networks:
+  finsmar_network:
+    driver: bridge

@@ -1,7 +1,7 @@
 from flask import jsonify, request, current_app # Added request and current_app
 
 # Import plaid client and constants from extensions
-from .extensions import db, plaid_products, plaid_country_codes
+from extensions import db, plaid_products, plaid_country_codes
 
 # Import Plaid models needed for link token creation
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
@@ -11,7 +11,9 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.exceptions import ApiException
 
-from .models import PlaidItem, Account
+from models import PlaidItem, Account, MarketPrice
+import datetime
+from sqlalchemy import func
 
 # Import SQLAlchemyError for DB error handling
 from sqlalchemy.exc import SQLAlchemyError
@@ -576,11 +578,20 @@ def register_routes(app):
             if not accounts:
                 return jsonify({'message': 'No accounts found in the database.'}), 200
 
-            # 2. Get Market Data Service instance
-            md_service = current_app.extensions.get('market_data_client')
-            if not md_service:
-                 current_app.logger.warning("Market data service not available for portfolio overview.")
-                 # Proceed without prices, maybe return a warning in response
+            # 2. Get cached prices (or relevant ones) into a dictionary
+            cached_prices_query = MarketPrice.query.all()
+            price_cache = {mp.symbol: {'price': mp.price_usd, 'time': mp.last_updated} for mp in cached_prices_query}
+
+            # Find the oldest timestamp from the prices used
+            oldest_price_time = None
+            if price_cache:
+                # Query min time directly or find from dict
+                # oldest_price_time = db.session.query(func.min(MarketPrice.last_updated)).scalar()
+                valid_times = [p['time'] for p in price_cache.values() if p.get('time')]
+                if valid_times:
+                     oldest_price_time = min(valid_times)
+                     # Format timestamp for display (ISO 8601 is good)
+                     portfolio['prices_as_of'] = oldest_price_time.isoformat()
 
             # 3. Process each account
             for acc in accounts:
@@ -610,48 +621,33 @@ def register_routes(app):
                      market_value_usd = native_balance # Outstanding loan amount
                      portfolio['loan_total_usd'] += market_value_usd
                      # Loans typically reduce net worth, but we sum positive value here
-                elif category in ['investment', 'crypto'] and md_service:
+                elif category in ['investment', 'crypto']:
                      symbol = acc.account_subtype # Assume subtype holds the ticker/crypto symbol
-                     if not symbol:
-                         current_app.logger.warning(f"Missing symbol (subtype) for account {acc.id} ({acc.name}). Cannot fetch price.")
-                     else:
-                         try:
-                             if category == 'investment':
-                                 price_usd = md_service.get_stock_price(symbol)
-                             elif category == 'crypto':
-                                 price_usd = md_service.get_crypto_price(symbol, target_currency='USD')
+                     if symbol and symbol in price_cache:
+                         cached = price_cache[symbol]
+                         price_usd = to_decimal(cached['price'])
+                         market_value_usd = native_balance * price_usd
+                         account_info['price_usd'] = float(price_usd)
+                     elif symbol:
+                         current_app.logger.warning(f"Price not found in cache for symbol: {symbol}")
+                         # Market value remains 0
+                     
+                     # Add to category total
+                     if category == 'investment': portfolio['investment_total_usd'] += market_value_usd
+                     elif category == 'crypto': portfolio['crypto_total_usd'] += market_value_usd
+                else:
+                     portfolio['other_assets_total_usd'] += native_balance
 
-                             if price_usd is not None:
-                                 price_usd = to_decimal(price_usd) # Convert fetched price
-                                 market_value_usd = native_balance * price_usd # balance is quantity here
-                                 account_info['price_usd'] = float(price_usd)
-                             else:
-                                 current_app.logger.warning(f"Could not fetch price for {category} symbol: {symbol}")
-                                 # Keep market_value_usd as 0
-
-                         except Exception as price_err:
-                             current_app.logger.error(f"Error fetching price for {symbol}: {price_err}", exc_info=True)
-                             # Keep market_value_usd as 0
-
-                     # Add calculated value to category total
-                     if category == 'investment':
-                         portfolio['investment_total_usd'] += market_value_usd
-                     elif category == 'crypto':
-                         portfolio['crypto_total_usd'] += market_value_usd
-
-                else: # Handle 'other' types or cases where md_service is unavailable
-                     # Maybe treat balance as value if possible, or add to 'other' category
-                     portfolio['other_assets_total_usd'] += native_balance # Tentative: assume native balance is value
-
-                account_info['market_value_usd'] = float(market_value_usd) # Store final value
+                account_info['market_value_usd'] = float(market_value_usd)
                 portfolio['account_details'].append(account_info)
 
-            # Calculate overall total value (excluding loans for net worth)
+
+
+            # Calculate overall total value
             portfolio['total_value_usd'] = (portfolio['cash_total_usd'] +
                                           portfolio['investment_total_usd'] +
                                           portfolio['crypto_total_usd'] +
                                           portfolio['other_assets_total_usd'])
-
             # Convert Decimal totals back to float for JSON serialization
             for key in portfolio:
                  if isinstance(portfolio[key], decimal.Decimal):
@@ -665,9 +661,26 @@ def register_routes(app):
         except Exception as e:
              current_app.logger.error(f"Unexpected error generating portfolio overview: {e}", exc_info=True)
              return jsonify({'error': 'Internal server error'}), 500
-    # --- Add more routes later ---
-    # @app.route('/accounts', methods=['GET'])
-    # def get_accounts(): ...
-    #
-    # @app.route('/accounts', methods=['POST'])
-    # def create_account(): ...
+
+    # --- Add Manual Market Sync Trigger Route ---
+    @app.route('/api/market/sync', methods=['POST'])
+    def trigger_market_sync():
+        """Manually triggers the background market price fetch job."""
+        scheduler = current_app.extensions.get('scheduler')
+        if not scheduler or not scheduler.running:
+            return jsonify({'error': 'Scheduler not running or not available'}), 503 # Service Unavailable
+
+        job_id = 'price_fetch_job' # The ID we gave the job in app.py
+        try:
+            # Option 1: Modify next_run_time to run ASAP (preferred for background execution)
+            scheduler.modify_job(job_id, next_run_time=datetime.datetime.now(datetime.timezone.utc))
+            current_app.logger.info(f"Manually triggered market sync job '{job_id}' to run now.")
+            return jsonify({'message': f"Market data sync job '{job_id}' triggered."}), 202 # Accepted
+
+            # Option 2: Run job directly (can block request if job is long) - Less ideal
+            # scheduler.run_job(job_id, blocking=False) # run_job might not exist or work this way easily with context
+            # return jsonify({'message': f"Market data sync job '{job_id}' run attempt initiated."}), 200
+
+        except Exception as e:
+            current_app.logger.error(f"Error triggering market sync job '{job_id}': {e}", exc_info=True)
+            return jsonify({'error': f"Failed to trigger market sync job '{job_id}'"}), 500
