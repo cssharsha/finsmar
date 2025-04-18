@@ -2,17 +2,19 @@ FROM node:18
 
 WORKDIR /app
 
-COPY package.json yarn.lock ./
-# Or if using npm: COPY package.json package-lock.json ./
+# Copy package.json and package-lock.json (if available)
+# Using package*.json copies both if they exist
+COPY package*.json ./
 
-RUN yarn install
-# Or if using npm: RUN npm install
+# Install dependencies based on lock file or package.json
+RUN npm install
 
+# Copy the rest of your app's source code
+# node_modules will be excluded by .dockerignore (we'll recreate it next)
 COPY . .
 
-# Expose React's default port
-EXPOSE 3000
+# Expose port (Adjust if Vite uses 5173, but start with 3000)
+EXPOSE 5173
 
-# Start the development server
-CMD ["yarn", "start"]
-# Or if using npm: CMD ["npm", "start"]
+# Use standard npm script runner
+CMD ["npx", "vite", "--host"]

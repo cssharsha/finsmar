@@ -127,8 +127,27 @@ def register_routes(app):
                     db.session.add(new_item)
                     current_app.logger.info(f"Adding new PlaidItem: {item_id}")
 
+                current_app.logger.info("Attempting to flush session...")
+                db.session.flush() # Send pending SQL to DB immediately
+                current_app.logger.info("Session flush successful.")
+
                 # Commit the session to save changes/new item
+                current_app.logger.info("Attempting to commit PlaidItem to database...")
                 db.session.commit()
+                current_app.logger.info("Database commit successfull for Plaid item.")
+
+                 # --- Verification Query ---
+                try:
+                    # Immediately try to query the item we just committed
+                    verify_item = PlaidItem.query.filter_by(item_id=item_id).first()
+                    if verify_item:
+                        current_app.logger.info(f"VERIFIED item {item_id} exists in DB immediately after commit. ID: {verify_item.id}")
+                    else:
+                        # This should NOT happen if commit was truly successful
+                        current_app.logger.error(f"VERIFICATION FAILED: item {item_id} NOT FOUND in DB immediately after commit!")
+                except Exception as verify_e:
+                    current_app.logger.error(f"Error during post-commit verification query: {verify_e}", exc_info=True)
+                # --- End Verification Query ---
 
             except SQLAlchemyError as e:
                 db.session.rollback() # Rollback DB changes on error
@@ -185,6 +204,14 @@ def register_routes(app):
                     for plaid_account in plaid_accounts:
                         plaid_account_id = plaid_account['account_id']
                         account = Account.query.filter_by(external_id=plaid_account_id, source='Plaid').first() # Filter by source too
+                        current_app.logger.info(f"Processing current acount: {plaid_account_id}")
+
+                        plaid_type_obj = plaid_account['type']
+                        plaid_subtype_obj = plaid_account['subtype']
+
+                        account_type_str = plaid_type_obj.value if hasattr(plaid_type_obj, 'value') else str(plaid_type_obj)
+                        account_subtype_str = plaid_subtype_obj.value if hasattr(plaid_subtype_obj, 'value') else str(plaid_subtype_obj)
+                        if plaid_subtype_obj == 'None': account_subtype_str = None
 
                         balance = plaid_account['balances']['current']
                         if balance is None: balance = plaid_account['balances']['available']
@@ -202,8 +229,11 @@ def register_routes(app):
                         else: # Create depository/loan/credit accounts
                              if plaid_account['type'] != 'investment': # Only create non-investment here
                                 new_account = Account(
-                                    external_id=plaid_account_id, name=plaid_account['name'], source='Plaid',
-                                    account_type=plaid_account['type'], account_subtype=plaid_account['subtype'],
+                                    external_id=plaid_account_id,
+                                    name=plaid_account['name'],
+                                    source='Plaid',
+                                    account_type=account_type_str,
+                                    account_subtype=account_subtype_str,
                                     balance=balance )
                                 db.session.add(new_account)
                                 accounts_created_count += 1
@@ -248,6 +278,7 @@ def register_routes(app):
                                 continue
 
                             ticker = security_info.get('ticker_symbol', f"SEC_ID_{security_id}")
+                            if ticker is None: ticker = 'rando'
                             name = security_info.get('name', 'Unknown Security')
                             quantity = holding['quantity']
 

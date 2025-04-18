@@ -12,7 +12,7 @@ class Account(db.Model):
     # Example: 'depository', 'investment', 'loan', 'crypto' (matches Plaid types where possible)
     account_type = db.Column(db.String(50), nullable=False)
     # Example: 'checking', 'savings', '401k', 'BTC'
-    account_subtype = db.Column(db.String(50), nullable=True)
+    account_subtype = db.Column(db.String(255), nullable=True)
     # Unique identifier from the source (e.g., Plaid account_id)
     external_id = db.Column(db.String(100), unique=True, nullable=True, index=True)
     balance = db.Column(db.Numeric(18, 8), nullable=False, default=0.0) # Increased precision for crypto/stocks

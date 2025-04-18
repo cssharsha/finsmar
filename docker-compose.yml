@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build: ./backend
@@ -33,10 +31,10 @@ services:
       dockerfile: Dockerfile.dev # Using a dev-specific Dockerfile
     container_name: finsmar_frontend
     ports:
-      - "3000:3000" # React default dev port
+      - "3000:5173" # React default dev port
     volumes:
       - ./frontend:/app
-      - /app/node_modules # Important: Keeps container node_modules separate
+      # - /app/node_modules # Important: Keeps container node_modules separate
     environment:
       - CHOKIDAR_USEPOLLING=true # Helps file watching work inside Docker
       # Pass the backend API URL to the frontend if needed directly

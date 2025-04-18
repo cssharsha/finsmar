@@ -1,5 +1,6 @@
 import logging
 from flask import Flask
+from flask_cors import CORS
 from .config import Config # Import the Config class
 from .extensions import db, init_market_data, migrate # Import db and migrate instances
 from .extensions import init_plaid, init_robinhood, init_coinbase
@@ -13,6 +14,10 @@ def create_app(config_class=Config):
     # Load configuration from config object
     app.config.from_object(config_class)
     app.logger.setLevel(logging.INFO)
+    app.logger.info(f"DB URI Configured: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
+
+    # Initialize CORS
+    CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
 
     # Initialize Flask extensions
     db.init_app(app)

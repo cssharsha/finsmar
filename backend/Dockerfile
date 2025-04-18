@@ -2,6 +2,8 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+ENV PYTHONPATH /app
+
 # Install system dependencies if needed (e.g., for psycopg2)
 # RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
 
