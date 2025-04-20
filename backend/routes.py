@@ -11,7 +11,7 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.exceptions import ApiException
 
-from models import PlaidItem, Account, MarketPrice
+from models import PlaidItem, Account, MarketPrice, Transaction
 import datetime
 from sqlalchemy import func
 
@@ -369,6 +369,134 @@ def register_routes(app):
              current_app.logger.error(f"Unexpected error during Plaid sync: {e}", exc_info=True)
              return jsonify({'error': 'Internal server error during sync'}), 500
 
+    # --- Budget Summary Route ---
+    @app.route('/api/budget/summary/<int:year>/<int:month>', methods=['GET'])
+    def get_budget_summary(year, month):
+        """Returns total spending per budget category for a given month."""
+        if not (1 <= month <= 12):
+            return jsonify({"error": "Invalid month provided"}), 400
+
+        current_app.logger.info(f"Querying summary for {year}, {month}")
+
+        try:
+            # Calculate start and end date for the requested month
+            start_date = datetime.date(year, month, 1)
+            # Go to the first day of the *next* month, then subtract one day? No, just filter < first day of next month
+            if month == 12:
+                end_date_exclusive = datetime.date(year + 1, 1, 1)
+            else:
+                end_date_exclusive = datetime.date(year, month + 1, 1)
+
+            # Query transactions: filter by date, exclude positive amounts/income categories
+            # Note: Plaid amounts are signed (+ income, - expense)
+            summary_query = db.session.query(
+                Transaction.budget_category,
+                func.sum(Transaction.amount).label('total_amount')
+            ).filter(
+                Transaction.date >= start_date,
+                Transaction.date < end_date_exclusive,
+                # Transaction.amount < 0, # Only include expenses (negative amounts)
+                # Optionally filter out specific categories like 'Transfers' if needed
+                Transaction.budget_category != 'Income',
+                Transaction.budget_category != 'Transfers'
+            ).group_by(
+                Transaction.budget_category
+            ).order_by(
+                func.sum(Transaction.amount) # Order by lowest amount (most negative) first
+            ).all()
+
+            # Format the results
+            summary_data = [
+                {"category": category if category else "Uncategorized", "total": float(total)}
+                for category, total in summary_query
+            ]
+
+            return jsonify(summary_data)
+
+        except ValueError:
+             return jsonify({"error": "Invalid year or month provided"}), 400
+        except Exception as e:
+            current_app.logger.error(f"Error generating budget summary for {year}-{month}: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error"}), 500
+
+    # --- Transactions List Route ---
+    @app.route('/api/transactions', methods=['GET'])
+    def get_transactions():
+        """Returns a paginated list of transactions with filtering/sorting."""
+        try:
+            # --- Pagination ---
+            page = request.args.get('page', 1, type=int)
+            per_page = request.args.get('per_page', 50, type=int)
+            # Limit per_page to a reasonable max
+            per_page = min(per_page, 200)
+
+            # --- Base Query ---
+            query = Transaction.query
+
+            # --- Filtering ---
+            start_date_str = request.args.get('start_date')
+            end_date_str = request.args.get('end_date')
+            category = request.args.get('category')
+            account_db_id = request.args.get('account_id', type=int) # Filter by our internal Account ID
+
+            if start_date_str:
+                try:
+                    start_date = datetime.date.fromisoformat(start_date_str)
+                    query = query.filter(Transaction.date >= start_date)
+                except ValueError:
+                    return jsonify({"error": "Invalid start_date format (YYYY-MM-DD)"}), 400
+            if end_date_str:
+                try:
+                    end_date = datetime.date.fromisoformat(end_date_str)
+                    query = query.filter(Transaction.date <= end_date)
+                except ValueError:
+                    return jsonify({"error": "Invalid end_date format (YYYY-MM-DD)"}), 400
+            if category:
+                 query = query.filter(Transaction.budget_category == category)
+            if account_db_id:
+                 query = query.filter(Transaction.account_db_id == account_db_id)
+
+            # --- Sorting ---
+            sort_by = request.args.get('sort_by', 'date') # Default sort by date
+            sort_dir = request.args.get('sort_dir', 'desc') # Default sort descending
+
+            sort_column = getattr(Transaction, sort_by, None)
+            if sort_column is None: # Default to date if invalid column provided
+                sort_column = Transaction.date
+                sort_by = 'date' # Reset for logging
+
+            if sort_dir.lower() == 'asc':
+                query = query.order_by(sort_column.asc())
+            else:
+                query = query.order_by(sort_column.desc()) # Default desc
+
+            # --- Execute Query ---
+            pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+            transactions = pagination.items
+            total_items = pagination.total
+            total_pages = pagination.pages
+
+            return jsonify({
+                'transactions': [t.to_dict() for t in transactions],
+                'pagination': {
+                    'page': page,
+                    'per_page': per_page,
+                    'total_items': total_items,
+                    'total_pages': total_pages
+                },
+                'filters': { # Echo back applied filters
+                    'start_date': start_date_str, 'end_date': end_date_str,
+                    'category': category, 'account_id': account_db_id
+                },
+                'sorting': {
+                    'sort_by': sort_by, 'sort_dir': sort_dir.lower()
+                }
+            })
+
+        except Exception as e:
+            current_app.logger.error(f"Error fetching transactions: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error"}), 500
+
     # --- Add Robinhood Sync Route ---
     @app.route('/api/robinhood/sync', methods=['POST'])
     def sync_robinhood_portfolio():
@@ -544,6 +672,25 @@ def register_routes(app):
             current_app.logger.error(f"Error during Coinbase sync: {e}", exc_info=True)
             return jsonify({'error': 'Failed to sync Coinbase portfolio'}), 500
 
+     # --- Manual Transaction Sync Trigger Route ---
+    # This reuses the same mechanism as the market sync trigger,
+    # running the *entire* background job immediately.
+    @app.route('/api/plaid/sync_transactions', methods=['POST'])
+    def trigger_transaction_sync():
+        """Manually triggers the background sync job (prices & transactions)."""
+        scheduler = current_app.extensions.get('scheduler')
+        if not scheduler or not scheduler.running:
+            return jsonify({'error': 'Scheduler not running'}), 503
+
+        job_id = 'background_sync_job' # ID of the combined job
+        try:
+            scheduler.modify_job(job_id, next_run_time=datetime.datetime.now(datetime.timezone.utc))
+            current_app.logger.info(f"Manually triggered background sync job '{job_id}' to run now.")
+            return jsonify({'message': f"Background sync job '{job_id}' triggered."}), 202
+        except Exception as e:
+            current_app.logger.error(f"Error triggering background sync job '{job_id}': {e}", exc_info=True)
+            return jsonify({'error': f"Failed to trigger background sync job '{job_id}'"}), 500
+
     # --- Add Portfolio Overview Route ---
     @app.route('/api/portfolio/overview', methods=['GET'])
     def get_portfolio_overview():
@@ -607,6 +754,7 @@ def register_routes(app):
                     'price_usd': None,
                     'category': 'other' # Default category
                 }
+                if account_info['balance'] <= 0: continue
                 category = type_mapping.get(acc.account_type, 'other')
                 account_info['category'] = category
 

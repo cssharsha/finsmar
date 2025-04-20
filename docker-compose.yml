@@ -4,6 +4,8 @@ services:
     container_name: finsmar_backend
     ports:
       - "5001:5000" # Host:Container port mapping for backend API
+    volumes:
+      - ./backend:/app # Mount local backend code into /app in container
     environment:
       # Loaded from .env file
       - FLASK_APP=${FLASK_APP}
@@ -29,7 +31,10 @@ services:
       dockerfile: Dockerfile
     container_name: finsmar_frontend
     ports:
-      - "3000:80"
+      - "3000:80" # React default dev port
+    volumes:
+      - ./frontend:/app
+      # - /app/node_modules # Important: Keeps container node_modules separate
     environment:
       - CHOKIDAR_USEPOLLING=true # Helps file watching work inside Docker
       # Pass the backend API URL to the frontend if needed directly

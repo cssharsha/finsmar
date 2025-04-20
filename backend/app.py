@@ -6,18 +6,20 @@ from extensions import db, init_market_data, migrate # Import db and migrate ins
 from extensions import init_plaid, init_robinhood, init_coinbase
 from routes import register_routes # Import the route registration function
 # Import models to ensure they are registered with SQLAlchemy before migrations
-from models import Account, MarketPrice
+from models import Account, MarketPrice, PlaidItem
 from services.market_data_service import MarketDataService
+from services.plaid_service import PlaidService
 import atexit
 import time
 from apscheduler.schedulers.background import BackgroundScheduler # Import scheduler
 from sqlalchemy.exc import SQLAlchemyError
 
 # --- Background Job Function ---
-def fetch_and_update_prices(app):
+def background_sync_job(app):
     """Background job to fetch prices for assets and update the MarketPrice table."""
     with app.app_context(): # IMPORTANT: Need app context to use extensions, config, db
         app.logger.info("Background job: Starting price fetch...")
+        start_time = time.time()
         md_service = app.extensions.get('market_data_client')
         if not md_service:
             app.logger.warning("Background job: Market data service not available. Skipping price fetch.")
@@ -91,9 +93,38 @@ def fetch_and_update_prices(app):
 
             # --- IMPORTANT: Add Delay ---
             app.logger.debug("Background job: Pausing before next fetch...")
-            time.sleep(13) # Wait >12 seconds for 5 calls/min limit (adjust if needed)
+            # time.sleep(13) # Wait >12 seconds for 5 calls/min limit (adjust if needed)
             # --------------------------
 
+        # --- Transaction Fetching (Use PlaidService) ---
+        app.logger.info("Background job: Starting transaction sync...")
+        try:
+            plaid_service = app.extensions.get('plaid_service')
+            if not plaid_service:
+                app.logger.warning("Background job: Plaid service not available. Skipping transaction sync.")
+            else:
+                # Fetch all items for the user
+                items_to_sync = PlaidItem.query.filter_by(user_id='finsmar-local-user-01').all()
+                app.logger.info(f"Background job: Found {len(items_to_sync)} Plaid items for transaction sync.")
+                success_count = 0
+                fail_count = 0
+                for item in items_to_sync:
+                    # Call the service method for each item
+                    success = plaid_service.sync_transactions_for_item(item)
+                    if success:
+                         success_count += 1
+                    else:
+                         fail_count += 1
+                    # Optional small delay between syncing different bank items?
+                    # time.sleep(1)
+                app.logger.info(f"Background job: Transaction sync portion complete. Succeeded Items: {success_count}, Failed Items: {fail_count}")
+
+        except Exception as e:
+             app.logger.error(f"Background job: Error during transaction syncing: {e}", exc_info=True)
+        # --------------------------------------------------
+
+        end_time = time.time()
+        app.logger.info(f"Background job: Sync cycle finished in {end_time - start_time:.2f} seconds.")
         app.logger.info(f"Background job: Price fetch complete. Updated: {updated_count}, Created: {created_count}, Failed: {failed_count}")
 
 def create_app(config_class=Config):
@@ -111,6 +142,14 @@ def create_app(config_class=Config):
     db.init_app(app)
     migrate.init_app(app, db)
     init_plaid(app)
+
+    if 'plaid_client' in app.extensions:
+        ps = PlaidService(app.extensions['plaid_client'], app.logger)
+        app.extensions['plaid_service'] = ps # Store the service instance
+        app.logger.info("Plaid Service initialized.")
+    else:
+        app.logger.error("Plaid client not initialized, cannot create PlaidService.")
+
     init_robinhood(app)
     init_coinbase(app)
     init_market_data(app)
@@ -122,7 +161,7 @@ def create_app(config_class=Config):
     scheduler = BackgroundScheduler(daemon=True, timezone='UTC')
     # Schedule job to run immediately and then every 30 minutes (adjust interval as needed)
     # Pass the app instance to the job function to establish context correctly
-    scheduler.add_job(fetch_and_update_prices, trigger='interval', args=[app], minutes=30, id='price_fetch_job', replace_existing=True, misfire_grace_time=600)
+    scheduler.add_job(background_sync_job, trigger='interval', args=[app], minutes=30, id='', replace_existing=True, misfire_grace_time=600)
     # Consider running once immediately on startup as well?
     # scheduler.add_job(fetch_and_update_prices, args=[app], id='price_fetch_job_startup', replace_existing=True)
     scheduler.start()
