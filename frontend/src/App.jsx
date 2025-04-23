@@ -6,6 +6,8 @@ import PlaidLinkButton from './components/PlaidLinkButton';
 import PortfolioOverview from './components/PortfolioOverview';
 import BudgetSummary from './components/BudgetSummary';
 import TransactionsPage from './pages/TransactionsPage'; // We will create this page
+import SettingsPage from './pages/SettingsPage';
+import BudgetCalculationDisplay from './components/BudgetCalculationDisplay';
 
 function App() {
   const currentDate = new Date();
@@ -17,7 +19,8 @@ function App() {
       <h1>finsmar</h1>
       <nav style={{ marginBottom: '20px', borderBottom: '1px solid #ccc', paddingBottom: '10px' }}>
         <Link to="/" style={{ marginRight: '15px' }}>Dashboard</Link>
-        <Link to="/transactions">Transactions</Link>
+        <Link to="/transactions" style={{ marginRight: '15px' }}>Transactions</Link>
+        <Link to="/settings">Settings</Link>
         {/* Add more links later */}
       </nav>
 
@@ -26,6 +29,8 @@ function App() {
         <Route path="/" element={
           <> {/* Use Fragment to group elements */}
             <p>Your Personal Finance Dashboard</p>
+            <hr />
+            <BudgetCalculationDisplay />
             <hr />
             <PlaidLinkButton />
             <hr />
@@ -40,9 +45,9 @@ function App() {
 
         {/* Route for the Transactions Page */}
         <Route path="/transactions" element={<TransactionsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
 
         {/* Add more routes later */}
-        {/* <Route path="/settings" element={<SettingsPage />} /> */}
       </Routes>
     </div>
   )

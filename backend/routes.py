@@ -12,6 +12,7 @@ from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetR
 from plaid.exceptions import ApiException
 
 from models import PlaidItem, Account, MarketPrice, Transaction
+from models import UserProfile, RecurringExpense
 import datetime
 from sqlalchemy import func
 
@@ -393,6 +394,218 @@ def register_routes(app):
             current_app.logger.error(f"Error fetching budget categories: {e}", exc_info=True)
             return jsonify({"error": "Internal server error fetching categories"}), 500
 
+    # --- User Profile CRUD ---
+    @app.route('/api/profile', methods=['GET'])
+    def get_profile():
+        """Gets the user profile (assumes single profile)."""
+        profile = UserProfile.query.first()
+        if not profile:
+            # Optionally create a default profile if none exists
+            profile = UserProfile(id=1) # Assign a default ID maybe
+            db.session.add(profile)
+            try:
+                db.session.commit()
+                current_app.logger.info("Created default UserProfile.")
+            except (SQLAlchemyError, IntegrityError) as e:
+                db.session.rollback()
+                current_app.logger.error(f"Failed to create default profile: {e}")
+                # Return error or empty dict? Let's return empty for now
+                return jsonify({})
+
+        return jsonify(profile.to_dict() if profile else {})
+
+    @app.route('/api/profile', methods=['PUT'])
+    def update_profile():
+        """Updates the user profile (e.g., salary)."""
+        profile = UserProfile.query.first()
+        if not profile:
+            # Or create if doesn't exist, as above
+            return jsonify({"error": "Profile not found"}), 404
+
+        data = request.json
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        try:
+            if 'monthly_salary_estimate' in data:
+                salary_str = data['monthly_salary_estimate']
+                if salary_str is None:
+                     profile.monthly_salary_estimate = None
+                else:
+                     # Validate and convert to Decimal before saving
+                     profile.monthly_salary_estimate = decimal.Decimal(salary_str)
+
+            # Add other updatable profile fields here later
+
+            db.session.commit()
+            return jsonify(profile.to_dict())
+        except (ValueError, decimal.InvalidOperation):
+             db.session.rollback()
+             return jsonify({"error": "Invalid number format for salary"}), 400
+        except (SQLAlchemyError, IntegrityError) as e:
+             db.session.rollback()
+             current_app.logger.error(f"Error updating profile: {e}", exc_info=True)
+             return jsonify({"error": "Database error updating profile"}), 500
+        except Exception as e:
+             db.session.rollback()
+             current_app.logger.error(f"Unexpected error updating profile: {e}", exc_info=True)
+             return jsonify({"error": "Internal server error"}), 500
+    # --- End User Profile CRUD ---
+
+
+    # --- Recurring Expense CRUD ---
+    @app.route('/api/recurring_expenses', methods=['GET'])
+    def get_recurring_expenses():
+        """Gets all active recurring expenses."""
+        try:
+            expenses = RecurringExpense.query.filter_by(is_active=True).order_by(RecurringExpense.name).all()
+            return jsonify([e.to_dict() for e in expenses])
+        except Exception as e:
+            current_app.logger.error(f"Error fetching recurring expenses: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error"}), 500
+
+    @app.route('/api/recurring_expenses', methods=['POST'])
+    def add_recurring_expense():
+        """Adds a new recurring expense."""
+        data = request.json
+        if not data or not data.get('name') or data.get('amount') is None or not data.get('budget_category'):
+            return jsonify({"error": "Missing required fields (name, amount, budget_category)"}), 400
+
+        try:
+            new_expense = RecurringExpense(
+                name=data['name'],
+                budget_category=data['budget_category'],
+                amount=decimal.Decimal(data['amount']),
+                frequency=data.get('frequency', 'monthly').lower(),
+                next_due_date=datetime.date.fromisoformat(data['next_due_date']) if data.get('next_due_date') else None,
+                is_active=data.get('is_active', True),
+                notes=data.get('notes')
+            )
+            db.session.add(new_expense)
+            db.session.commit()
+            return jsonify(new_expense.to_dict()), 201 # Return created object and 201 status
+        except (ValueError, decimal.InvalidOperation, TypeError):
+             db.session.rollback()
+             return jsonify({"error": "Invalid data format (amount must be number, date YYYY-MM-DD)"}), 400
+        except (SQLAlchemyError, IntegrityError) as e:
+             db.session.rollback()
+             current_app.logger.error(f"Error adding recurring expense: {e}", exc_info=True)
+             return jsonify({"error": "Database error adding expense"}), 500
+        except Exception as e:
+             db.session.rollback()
+             current_app.logger.error(f"Unexpected error adding recurring expense: {e}", exc_info=True)
+             return jsonify({"error": "Internal server error"}), 500
+
+    @app.route('/api/recurring_expenses/<int:expense_id>', methods=['PUT'])
+    def update_recurring_expense(expense_id):
+        """Updates an existing recurring expense."""
+        expense = RecurringExpense.query.get_or_404(expense_id) # Get expense or return 404
+        data = request.json
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        try:
+            # Update fields if provided in request data
+            if 'name' in data: expense.name = data['name']
+            if 'budget_category' in data: expense.budget_category = data['budget_category']
+            if 'amount' in data: expense.amount = decimal.Decimal(data['amount'])
+            if 'frequency' in data: expense.frequency = data['frequency'].lower()
+            if 'next_due_date' in data:
+                 expense.next_due_date = datetime.date.fromisoformat(data['next_due_date']) if data['next_due_date'] else None
+            if 'is_active' in data: expense.is_active = data['is_active']
+            if 'notes' in data: expense.notes = data['notes']
+
+            db.session.commit()
+            return jsonify(expense.to_dict())
+        except (ValueError, decimal.InvalidOperation, TypeError):
+             db.session.rollback()
+             return jsonify({"error": "Invalid data format (amount must be number, date YYYY-MM-DD)"}), 400
+        except (SQLAlchemyError, IntegrityError) as e:
+             db.session.rollback()
+             current_app.logger.error(f"Error updating recurring expense {expense_id}: {e}", exc_info=True)
+             return jsonify({"error": "Database error updating expense"}), 500
+        except Exception as e:
+             db.session.rollback()
+             current_app.logger.error(f"Unexpected error updating recurring expense {expense_id}: {e}", exc_info=True)
+             return jsonify({"error": "Internal server error"}), 500
+
+    @app.route('/api/recurring_expenses/<int:expense_id>', methods=['DELETE'])
+    def delete_recurring_expense(expense_id):
+        """Deletes (or deactivates) a recurring expense."""
+        expense = RecurringExpense.query.get_or_404(expense_id)
+        try:
+            # Option 1: Hard delete
+            # db.session.delete(expense)
+            # Option 2: Soft delete (mark as inactive) - Often safer
+            expense.is_active = False
+            db.session.commit()
+            # Return no content on successful delete/deactivation
+            return '', 204
+        except (SQLAlchemyError, IntegrityError) as e:
+             db.session.rollback()
+             current_app.logger.error(f"Error deleting recurring expense {expense_id}: {e}", exc_info=True)
+             return jsonify({"error": "Database error deleting expense"}), 500
+        except Exception as e:
+             db.session.rollback()
+             current_app.logger.error(f"Unexpected error deleting recurring expense {expense_id}: {e}", exc_info=True)
+             return jsonify({"error": "Internal server error"}), 500
+    # --- End Recurring Expense CRUD ---
+
+    # --- Route to Update Account Details (e.g., Loan Payment) ---
+    @app.route('/api/accounts/<int:account_id>', methods=['PUT'])
+    def update_account(account_id):
+        """Updates specific details for an account."""
+        # Use get_or_404 to automatically return 404 if account ID doesn't exist
+        account = Account.query.get_or_404(account_id)
+        data = request.json
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        updated_fields = []
+        try:
+            # Allow updating specific fields if they are in the request
+            if 'name' in data:
+                account.name = data['name']
+                updated_fields.append('name')
+            # Add other general fields if needed (e.g., notes?)
+
+            # --- Update Loan Specific Fields ---
+            if account.account_type == 'loan': # Only update loan fields for loan accounts
+                if 'loan_monthly_payment' in data:
+                    payment_str = data['loan_monthly_payment']
+                    # Allow setting to null/empty or a valid number
+                    account.loan_monthly_payment = decimal.Decimal(payment_str) if payment_str else None
+                    updated_fields.append('loan_monthly_payment')
+                if 'loan_original_amount' in data:
+                    orig_str = data['loan_original_amount']
+                    account.loan_original_amount = decimal.Decimal(orig_str) if orig_str else None
+                    updated_fields.append('loan_original_amount')
+                if 'loan_interest_rate' in data:
+                     rate_str = data['loan_interest_rate']
+                     # Store rate as decimal (e.g., 5% stored as 0.05)
+                     account.loan_interest_rate = decimal.Decimal(rate_str) if rate_str else None
+                     updated_fields.append('loan_interest_rate')
+            # --------------------------------
+
+            if not updated_fields:
+                 return jsonify({"message": "No valid fields provided for update"}), 400
+
+            db.session.commit()
+            current_app.logger.info(f"Updated fields {updated_fields} for Account ID: {account_id}")
+            return jsonify(account.to_dict()) # Return updated account
+
+        except (ValueError, decimal.InvalidOperation, TypeError):
+             db.session.rollback()
+             return jsonify({"error": "Invalid data format (numeric fields must be numbers)"}), 400
+        except SQLAlchemyError as e:
+             db.session.rollback()
+             current_app.logger.error(f"Error updating account {account_id}: {e}", exc_info=True)
+             return jsonify({"error": "Database error updating account"}), 500
+        except Exception as e:
+             db.session.rollback()
+             current_app.logger.error(f"Unexpected error updating account {account_id}: {e}", exc_info=True)
+             return jsonify({"error": "Internal server error"}), 500
+
     # --- Budget Summary Route ---
     @app.route('/api/budget/summary/<int:year>/<int:month>', methods=['GET'])
     def get_budget_summary(year, month):
@@ -442,6 +655,61 @@ def register_routes(app):
         except Exception as e:
             current_app.logger.error(f"Error generating budget summary for {year}-{month}: {e}", exc_info=True)
             return jsonify({"error": "Internal server error"}), 500
+
+    # --- Add Budget Calculation Route ---
+    @app.route('/api/budget/calculation', methods=['GET'])
+    def get_budget_calculation():
+        """Fetches inputs and calculates estimated monthly available funds."""
+        try:
+            # 1. Get Estimated Monthly Salary
+            # Assuming single user, fetch the first profile record
+            profile = UserProfile.query.first()
+            monthly_salary = to_decimal(profile.monthly_salary_estimate if profile else 0)
+
+            # 2. Calculate Total Monthly Recurring Expenses
+            total_recurring_monthly = decimal.Decimal(0.0)
+            active_expenses = RecurringExpense.query.filter_by(is_active=True).all()
+            for expense in active_expenses:
+                amount = to_decimal(expense.amount)
+                frequency = expense.frequency.lower() if expense.frequency else 'monthly'
+
+                if frequency == 'monthly':
+                    total_recurring_monthly += amount
+                elif frequency == 'yearly':
+                    total_recurring_monthly += amount / 12
+                elif frequency == 'quarterly':
+                    total_recurring_monthly += amount / 3
+                elif frequency == 'weekly':
+                    # Approximate monthly amount for weekly expenses
+                    total_recurring_monthly += amount * decimal.Decimal(52.0 / 12.0)
+                # Add other frequencies if needed (e.g., bi-weekly: amount * (26.0 / 12.0))
+                else:
+                    current_app.logger.warning(f"Unknown frequency '{frequency}' for recurring expense '{expense.name}'. Treating as monthly.")
+                    total_recurring_monthly += amount # Default to monthly if frequency unknown
+
+            # 3. Calculate Total Monthly Loan Payments
+            total_loan_payments_monthly = decimal.Decimal(0.0)
+            loan_accounts = Account.query.filter_by(account_type='loan').all()
+            for loan in loan_accounts:
+                total_loan_payments_monthly += to_decimal(loan.loan_monthly_payment) # Sums up non-null payments
+
+            # 4. Perform Calculation
+            estimated_available = monthly_salary - total_recurring_monthly - total_loan_payments_monthly
+
+            # 5. Prepare Response Data (convert Decimals to float for JSON)
+            result_data = {
+                'monthly_salary_estimate': float(monthly_salary),
+                'total_recurring_expenses_monthly': float(total_recurring_monthly),
+                'total_loan_payments_monthly': float(total_loan_payments_monthly),
+                'estimated_available_monthly': float(estimated_available),
+                'calculation_timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat()
+            }
+
+            return jsonify(result_data)
+
+        except Exception as e:
+            current_app.logger.error(f"Error calculating budget: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error during budget calculation"}), 500
 
     @app.route('/api/transactions/summary', methods=['GET'])
     def get_filtered_transaction_summary():

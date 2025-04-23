@@ -27,6 +27,29 @@ class Account(db.Model):
     # lazy='dynamic' allows querying transactions efficiently, e.g., acc.transactions.filter_by(...)
     transactions = relationship('Transaction', back_populates='account', lazy='dynamic', cascade="all, delete-orphan")
 
+    loan_monthly_payment = db.Column(db.Numeric(10, 2), nullable=True)
+    loan_original_amount = db.Column(db.Numeric(12, 2), nullable=True)
+    loan_interest_rate = db.Column(db.Numeric(5, 4), nullable=True) # Store as decimal, e.g., 0.05 for 5%
+
+    def to_dict(self):
+        """Returns a dictionary representation of the account."""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'source': self.source,
+            'account_type': self.account_type,
+            'account_subtype': self.account_subtype,
+            'external_id': self.external_id,
+            'balance': float(self.balance) if self.balance is not None else None,
+            # --- Add loan fields ---
+            'loan_monthly_payment': float(self.loan_monthly_payment) if self.loan_monthly_payment is not None else None,
+            'loan_original_amount': float(self.loan_original_amount) if self.loan_original_amount is not None else None,
+            'loan_interest_rate': float(self.loan_interest_rate) if self.loan_interest_rate is not None else None,
+            # -----------------------
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            # Add transaction count or other relevant summary data if needed later
+        }
 
     def __repr__(self):
         return f'<Account {self.name} ({self.account_type} - {self.source})>'
@@ -131,8 +154,60 @@ class Transaction(db.Model):
 
     def __repr__(self):
         return f'<Transaction {self.date} {self.name} {self.amount}>'
-# --- Add more models later ---
-# class Transaction(db.Model): ...
-# class Budget(db.Model): ...
-# class Loan(db.Model): ...
-# class Income(db.Model): ...
+
+class UserProfile(db.Model):
+    __tablename__ = 'user_profile'
+    # Simple ID, could just always be 1 for single user
+    id = db.Column(db.Integer, primary_key=True)
+    # Store user's estimated GROSS or NET monthly income (clarify which one later)
+    monthly_salary_estimate = db.Column(db.Numeric(12, 2), nullable=True)
+    # We can add other user settings here later
+
+    # Ensure only one profile exists (for single-user app)
+    # You might enforce this in application logic rather than DB constraint
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'monthly_salary_estimate': float(self.monthly_salary_estimate) if self.monthly_salary_estimate is not None else None
+            # Add other fields later if needed
+        }
+
+    def __repr__(self):
+        return f'<UserProfile {self.id}>'
+
+class RecurringExpense(db.Model):
+    __tablename__ = 'recurring_expense'
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    # Use the same categories as transactions for consistency
+    budget_category = db.Column(db.String(50), nullable=False, index=True)
+    # Amount per occurrence
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    # How often it occurs (e.g., 'monthly', 'yearly', 'quarterly', 'weekly')
+    frequency = db.Column(db.String(20), nullable=False, default='monthly')
+    # Optional: next due date for reminders/projections
+    next_due_date = db.Column(db.Date, nullable=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    notes = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'budget_category': self.budget_category,
+            'amount': float(self.amount) if self.amount is not None else None,
+            'frequency': self.frequency,
+            'next_due_date': self.next_due_date.isoformat() if self.next_due_date else None,
+            'is_active': self.is_active,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+    def __repr__(self):
+        return f'<RecurringExpense {self.name} ({self.amount}/{self.frequency})>'
