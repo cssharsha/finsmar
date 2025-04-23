@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import BudgetSummaryTransactions from '../components/BudgetSummaryTransactions.jsx'
 
 const API_BASE_URL = 'http://localhost:5001';
 
@@ -26,36 +27,58 @@ const TransactionsPage = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [categories, setCategories] = useState([]);
+    const [chartData, setChartData] = useState(null); // Start as null
+    const [chartLoading, setChartLoading] = useState(true);
+    const [chartError, setChartError] = useState(null);
 
     // Function to fetch transactions based on current state
     const fetchTransactions = useCallback(async () => {
         setLoading(true);
+        setChartLoading(true);
         setError(null);
+        setChartError(null);
+
+        // Construct query parameters (used by both endpoints)
+        const params = new URLSearchParams();
+        // Add filters to params
+        if (filters.category) params.append('category', filters.category);
+        if (filters.start_date) params.append('start_date', filters.start_date);
+        if (filters.end_date) params.append('end_date', filters.end_date);
+        // if (filters.account_id) params.append('account_id', filters.account_id);
+
+        // Construct params specific to transaction list (pagination, sorting)
+        const txnListParams = new URLSearchParams(params); // Clone base filters
+        txnListParams.append('page', pagination.page);
+        txnListParams.append('per_page', pagination.per_page);
+        txnListParams.append('sort_by', sorting.sort_by);
+        txnListParams.append('sort_dir', sorting.sort_dir);
+
+        const txnListUrl = `${API_BASE_URL}/api/transactions?${txnListParams.toString()}`;
+        const summaryUrl = `${API_BASE_URL}/api/transactions/summary?${params.toString()}`; // Uses only filter parameters
+
         console.log("Fetching transactions with filters:", filters);
         try {
-            // Construct query parameters
-            const params = new URLSearchParams({
-                page: pagination.page,
-                per_page: pagination.per_page,
-                sort_by: sorting.sort_by,
-                sort_dir: sorting.sort_dir,
-            });
-            if (filters.category) params.append('category', filters.category);
-            if (filters.start_date) params.append('start_date', filters.start_date);
-            if (filters.end_date) params.append('end_date', filters.end_date);
-            // if (filters.account_id) params.append('account_id', filters.account_id);
-            const queryString = params.toString();
-            console.log("API Query String:", queryString);
+            // Fetch both concurrently using Promise.all
+            const [txnResponse, summaryResponse] = await Promise.all([
+                 axios.get(txnListUrl),
+                 axios.get(summaryUrl)
+            ]);
 
-            const response = await axios.get(`${API_BASE_URL}/api/transactions?${queryString}`);
-            setTransactions(response.data.transactions || []);
-            setPagination(response.data.pagination || { page: 1, per_page: 50, total_items: 0, total_pages: 1 });
-            console.log("Fetched transactions:", response.data);
+            // Process transaction list response
+            setTransactions(txnResponse.data.transactions || []);
+            setPagination(txnResponse.data.pagination || { page: 1, per_page: 50, total_items: 0, total_pages: 1 });
+            console.log("Fetched transactions:", txnResponse.data);
+
+            // Process summary response
+            setChartData(summaryResponse.data.summary || []); // Expecting { "summary": [...] }
+            console.log("Fetched summary for chart:", summaryResponse.data.summary);
         } catch (err) {
             console.error("Error fetching transactions:", err.response ? err.response.data : err);
             setError("Failed to fetch transactions.");
+            setChartError("Failed to fetch summary data.");
         } finally {
             setLoading(false);
+            setChartLoading(false);
         }
     }, [pagination.page, pagination.per_page, filters, sorting]); // Dependencies for useCallback
 
@@ -97,7 +120,7 @@ const TransactionsPage = () => {
     const handleFilterSubmit = (e) => {
          e.preventDefault();
          setPagination(prev => ({ ...prev, page: 1 })); // Reset to page 1 on filter change
-         fetchTransactions(); // Re-fetch with new filters (needed if not fetching on change)
+         // fetchTransactions(); // Re-fetch with new filters (needed if not fetching on change)
     };
 
     const handlePageChange = (newPage) => {
@@ -106,10 +129,23 @@ const TransactionsPage = () => {
         }
     };
     // ----------------------
+    // Determine title for the summary chart based on filters
+    let chartTitle = "Filtered Expense Summary";
+    if (!filters.category && !filters.start_date && !filters.end_date) {
+         chartTitle = "Overall Expense Summary"; // Or maybe based on default date range?
+    }
 
     return (
         <div>
             <h2>Transactions</h2>
+
+            {/* --- Render Budget Summary Chart with dynamic data --- */}
+            <div style={{ marginBottom: '20px', paddingBottom: '20px', borderBottom: '1px solid #eee' }}>
+                 {chartLoading && <p>Loading summary chart...</p>}
+                 {chartError && <p style={{ color: 'red' }}>Error: {chartError}</p>}
+                 {!chartLoading && !chartError && <BudgetSummaryTransactions data={chartData} title={chartTitle} />}
+            </div>
+            {/* --------------------------------------------------- */}
 
             {/* --- Modify Filter Form --- */}
             <form onSubmit={handleFilterSubmit} style={{ marginBottom: '15px' }}>
