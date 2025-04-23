@@ -25,11 +25,13 @@ const TransactionsPage = () => {
     const [sorting, setSorting] = useState({ sort_by: 'date', sort_dir: 'desc' });
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [categories, setCategories] = useState([]);
 
     // Function to fetch transactions based on current state
     const fetchTransactions = useCallback(async () => {
         setLoading(true);
         setError(null);
+        console.log("Fetching transactions with filters:", filters);
         try {
             // Construct query parameters
             const params = new URLSearchParams({
@@ -42,8 +44,10 @@ const TransactionsPage = () => {
             if (filters.start_date) params.append('start_date', filters.start_date);
             if (filters.end_date) params.append('end_date', filters.end_date);
             // if (filters.account_id) params.append('account_id', filters.account_id);
+            const queryString = params.toString();
+            console.log("API Query String:", queryString);
 
-            const response = await axios.get(`${API_BASE_URL}/api/transactions?start_date=${filters.start_date}&end_date=${filters.end_date}`);
+            const response = await axios.get(`${API_BASE_URL}/api/transactions?${queryString}`);
             setTransactions(response.data.transactions || []);
             setPagination(response.data.pagination || { page: 1, per_page: 50, total_items: 0, total_pages: 1 });
             console.log("Fetched transactions:", response.data);
@@ -54,6 +58,20 @@ const TransactionsPage = () => {
             setLoading(false);
         }
     }, [pagination.page, pagination.per_page, filters, sorting]); // Dependencies for useCallback
+
+    useEffect(() => {
+        const fetchCategories = async () => {
+            try {
+                const response = await axios.get(`${API_BASE_URL}/api/budget/categories`);
+                setCategories(response.data.categories || []);
+                console.log("Fetched categories:", response.data.categories);
+            } catch (err) {
+                console.error("Error fetching categories:", err);
+                // Optional: Set an error state specific to category fetching
+            }
+        };
+        fetchCategories();
+    }, []);
 
     // Fetch data when component mounts or dependencies change
     useEffect(() => {
@@ -72,6 +90,7 @@ const TransactionsPage = () => {
 
     const handleFilterChange = (e) => {
          setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
+         console.log("Filter chsnged: ", e.target.name, ", ", e.target.value);
          // Optionally trigger fetch here, or require explicit button click
     };
 
@@ -92,14 +111,26 @@ const TransactionsPage = () => {
         <div>
             <h2>Transactions</h2>
 
-            {/* --- Basic Filter Form --- */}
+            {/* --- Modify Filter Form --- */}
             <form onSubmit={handleFilterSubmit} style={{ marginBottom: '15px' }}>
-                 <label> Category: <input type="text" name="category" value={filters.category} onChange={handleFilterChange} /> </label>
-                 <label style={{ marginLeft: '10px' }}> Start Date: <input type="date" name="start_date" value={filters.start_date} onChange={handleFilterChange} /> </label>
-                 <label style={{ marginLeft: '10px' }}> End Date: <input type="date" name="end_date" value={filters.end_date} onChange={handleFilterChange} /> </label>
-                 <button type="submit" style={{ marginLeft: '10px' }}>Apply Filters</button>
+                <label> Category:
+                    {/* Replace text input with select dropdown */}
+                    <select
+                        name="category"
+                        value={filters.category}
+                        onChange={handleFilterChange}
+                    >
+                        <option value="">All Categories</option> {/* Default option */}
+                        {categories.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                    </select>
+                </label>
+                {/* Keep date inputs */}
+                <label style={{ marginLeft: '10px' }}> Start Date: <input type="date" name="start_date" value={filters.start_date} onChange={handleFilterChange} /> </label>
+                <label style={{ marginLeft: '10px' }}> End Date: <input type="date" name="end_date" value={filters.end_date} onChange={handleFilterChange} /> </label>
+                <button type="submit" style={{ marginLeft: '10px' }}>Apply Filters</button>
             </form>
-            {/* ----------------------- */}
 
             {loading && <p>Loading transactions...</p>}
             {error && <p style={{ color: 'red' }}>Error: {error}</p>}

@@ -369,6 +369,30 @@ def register_routes(app):
              current_app.logger.error(f"Unexpected error during Plaid sync: {e}", exc_info=True)
              return jsonify({'error': 'Internal server error during sync'}), 500
 
+    # --- Route to Get Unique Budget Categories ---
+    @app.route('/api/budget/categories', methods=['GET'])
+    def get_budget_categories():
+        """Returns a distinct list of budget categories used in transactions."""
+        try:
+            # Query distinct, non-null budget categories from the transaction table
+            categories_query = db.session.query(
+                Transaction.budget_category
+            ).filter(
+                Transaction.budget_category.isnot(None),
+                Transaction.budget_category != ''
+            ).distinct().order_by(
+                Transaction.budget_category
+            ).all()
+
+            # Extract the string values from the query result tuples
+            categories = [cat[0] for cat in categories_query]
+
+            return jsonify({"categories": categories})
+
+        except Exception as e:
+            current_app.logger.error(f"Error fetching budget categories: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error fetching categories"}), 500
+
     # --- Budget Summary Route ---
     @app.route('/api/budget/summary/<int:year>/<int:month>', methods=['GET'])
     def get_budget_summary(year, month):
@@ -419,6 +443,67 @@ def register_routes(app):
             current_app.logger.error(f"Error generating budget summary for {year}-{month}: {e}", exc_info=True)
             return jsonify({"error": "Internal server error"}), 500
 
+    @app.route('/api/transactions/summary', methods=['GET'])
+    def get_filtered_transaction_summary():
+        """
+        Returns total spending per budget category based on provided filters
+        (same filters as /api/transactions).
+        """
+        try:
+            # --- Base Query ---
+            # Query category and sum, filter for expenses, exclude Income/Transfers
+            query = db.session.query(
+                Transaction.budget_category,
+                func.sum(Transaction.amount).label('total_amount')
+            ).filter(
+                # Transaction.amount < 0,
+                Transaction.budget_category.isnot(None),
+                Transaction.budget_category != '',
+                Transaction.budget_category != 'Income',
+                Transaction.budget_category != 'Transfers'
+            )
+
+            # --- Apply Filters (mirroring /api/transactions) ---
+            start_date_str = request.args.get('start_date')
+            end_date_str = request.args.get('end_date')
+            category = request.args.get('category')
+            account_db_id = request.args.get('account_id', type=int)
+
+            if start_date_str:
+                try:
+                    start_date = datetime.date.fromisoformat(start_date_str)
+                    query = query.filter(Transaction.date >= start_date)
+                except ValueError: return jsonify({"error": "Invalid start_date format"}), 400
+            if end_date_str:
+                try:
+                    end_date = datetime.date.fromisoformat(end_date_str)
+                    query = query.filter(Transaction.date <= end_date)
+                except ValueError: return jsonify({"error": "Invalid end_date format"}), 400
+            if category:
+                 query = query.filter(Transaction.budget_category == category)
+            if account_db_id:
+                 query = query.filter(Transaction.account_db_id == account_db_id)
+
+            # --- Group and Execute ---
+            summary_query = query.group_by(
+                Transaction.budget_category
+            ).order_by(
+                func.sum(Transaction.amount) # Order by most negative first
+            ).all()
+
+            # Format the results
+            summary_data = [
+                {"category": cat if cat else "Uncategorized", "total": float(total)}
+                for cat, total in summary_query
+            ]
+
+            # Return just the summary data
+            return jsonify({"summary": summary_data})
+
+        except Exception as e:
+            current_app.logger.error(f"Error generating filtered transaction summary: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error"}), 500
+
     # --- Transactions List Route ---
     @app.route('/api/transactions', methods=['GET'])
     def get_transactions():
@@ -438,6 +523,8 @@ def register_routes(app):
             end_date_str = request.args.get('end_date')
             category = request.args.get('category')
             account_db_id = request.args.get('account_id', type=int) # Filter by our internal Account ID
+
+            current_app.logger.info(f"Current cqtegories: {category}")
 
             if start_date_str:
                 try:
