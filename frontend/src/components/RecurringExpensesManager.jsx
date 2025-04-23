@@ -35,6 +35,7 @@ const RecurringExpensesManager = () => {
     const [isUpdating, setIsUpdating] = useState(false);
     const [updateError, setUpdateError] = useState(null);
     const [updateSuccess, setUpdateSuccess] = useState('');
+    const [availableCategories, setAvailableCategories] = useState([]);
 
     // --- Fetching Logic ---
     const fetchExpenses = useCallback(async () => {
@@ -55,6 +56,21 @@ const RecurringExpensesManager = () => {
     useEffect(() => {
         fetchExpenses();
     }, [fetchExpenses]);
+
+    useEffect(() => {
+        const fetchCategories = async () => {
+            try {
+                const response = await axios.get(`${API_BASE_URL}/api/budget/categories`);
+                setAvailableCategories(response.data.categories || []);
+                console.log("Fetched available categories for dropdown:", response.data.categories);
+            } catch (err) {
+                console.error("Error fetching budget categories for dropdown:", err);
+                // Handle error - maybe show a message or allow text input as fallback?
+                // For now, dropdown will just be empty if fetch fails.
+            }
+        };
+        fetchCategories();
+    }, []);
 
     // --- Form Handling ---
     const handleNewExpenseChange = (e) => {
@@ -188,7 +204,28 @@ const RecurringExpensesManager = () => {
                     </div>
                     {/* ... other inputs for category, frequency, due date, notes, bound to editFormData ... */}
                     <div style={{marginTop: '10px'}}>
-                     <label>Category*: <input type="text" name="budget_category" value={editFormData.budget_category || ''} onChange={handleEditFormChange} required disabled={isUpdating} /></label>
+                     <label>Category*:
+                        {/* --- Use Dropdown in Edit Form --- */}
+                            <select
+                                 name="budget_category"
+                                 value={editFormData.budget_category || ''}
+                                 onChange={handleEditFormChange} // Use edit form handler
+                                 required
+                                 disabled={isUpdating}
+                             >
+                                 <option value="">-- Select Category --</option>
+                                 {/* You might want a combined list of existing + maybe specific edit category */}
+                                 {/* Simple approach: Use fetched categories */}
+                                 {availableCategories.map(cat => (
+                                     <option key={cat} value={cat}>{cat}</option>
+                                 ))}
+                                 {/* Ensure the currently saved category is an option even if not in fetched list? Edge case.*/}
+                                 {editFormData.budget_category && !availableCategories.includes(editFormData.budget_category) && (
+                                     <option key={editFormData.budget_category} value={editFormData.budget_category}>{editFormData.budget_category} (Current)</option>
+                                 )}
+                             </select>
+                            {/* -------------------------------- */}
+                         </label>
                      <label style={{ marginLeft: '10px' }}>Frequency*:
                         <select name="frequency" value={editFormData.frequency || 'monthly'} onChange={handleEditFormChange} disabled={isUpdating}>
                             <option value="monthly">Monthly</option> <option value="yearly">Yearly</option>
@@ -225,8 +262,20 @@ const RecurringExpensesManager = () => {
                         </div>
                         <div style={{marginTop: '10px'}}>
                              <label>Category*:
-                                  {/* TODO: Use fetched category dropdown later */}
-                                  <input type="text" name="budget_category" value={newExpense.budget_category} onChange={handleNewExpenseChange} required disabled={isAdding} placeholder="e.g., Housing" />
+                                    {/* --- Replace text input with Dropdown --- */}
+                                <select
+                                    name="budget_category"
+                                    value={newExpense.budget_category}
+                                    onChange={handleNewExpenseChange} // Use add form handler
+                                    required
+                                    disabled={isAdding}
+                                >
+                                    <option value="">-- Select Category --</option>
+                                    {availableCategories.map(cat => (
+                                        <option key={cat} value={cat}>{cat}</option>
+                                    ))}
+                                    {/* Option to add a new category? More complex */}
+                                </select>
                              </label>
                              <label style={{ marginLeft: '10px' }}>Frequency*:
                                 <select name="frequency" value={newExpense.frequency} onChange={handleNewExpenseChange} disabled={isAdding}>
