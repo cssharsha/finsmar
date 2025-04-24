@@ -16,7 +16,8 @@ migrate = Migrate()
 plaid_products = [
     Products("auth"),
     Products("transactions"),
-    Products("investments")
+    Products("investments"),
+    Products("liabilities")
 ] # Default products
 plaid_country_codes = [CountryCode('US')] # Default country codes
 

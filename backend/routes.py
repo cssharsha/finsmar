@@ -606,6 +606,88 @@ def register_routes(app):
              current_app.logger.error(f"Unexpected error updating account {account_id}: {e}", exc_info=True)
              return jsonify({"error": "Internal server error"}), 500
 
+    # --- Add Route to Fetch Plaid Loan Rate ---
+    @app.route('/api/accounts/<int:account_id>/fetch_plaid_rate', methods=['GET'])
+    def fetch_plaid_loan_rate(account_id):
+        """Attempts to fetch the interest rate for a specific loan account via Plaid."""
+        account = Account.query.get_or_404(account_id)
+        if account.account_type != 'loan' or not account.external_id or account.source not in ['Plaid', 'PlaidInvestment']: # Only for Plaid loans with external ID
+            return jsonify({"error": "Account is not a Plaid-linked loan account"}), 400
+
+        # Find the associated PlaidItem (needs relationship or query)
+        # Simplistic query assuming external_id on Account matches Plaid account_id
+        # A direct relationship Account<->PlaidItem would be better.
+        # This assumes Plaid transactions were synced for this account's item.
+        transaction_for_account = Transaction.query.filter_by(plaid_account_id=account.external_id).first()
+        if not transaction_for_account:
+             # Alternative: Need a way to map Account back to PlaidItem more directly
+             # Maybe store item_id on Account? Or query PlaidItem based on user_id and check accounts list?
+             return jsonify({"error": "Cannot determine Plaid item linkage for this account"}), 500 # Improve this logic
+
+        # Assuming we found the transaction, infer item (this link is weak)
+        # Better: Query PlaidItem directly if possible, e.g., if you stored item_id on Account
+        plaid_item = PlaidItem.query.filter(
+             # How to link Account.id -> PlaidItem? Needs better DB design or query.
+             # Placeholder logic - THIS NEEDS REFINEMENT based on your data links
+             # PlaidItem.accounts.any(id=account_id) # If using relationship
+             # For now, assume we can get the item somehow...
+             PlaidItem.item_id == transaction_for_account.plaid_item_id # Requires adding item_id to Transaction model
+        ).first()
+
+        # ------> IMPORTANT: The above logic to find the PlaidItem from Account ID needs proper implementation <------
+        # For now, let's just fetch the FIRST PlaidItem for the user as a placeholder
+        plaid_item = PlaidItem.query.filter_by(user_id='finsmar-local-user-01').first()
+        if not plaid_item:
+             return jsonify({"error": "Plaid item not found"}), 404
+        # <------ END IMPORTANT PLACEHOLDER ------>
+
+
+        try:
+            client = current_app.extensions['plaid_client']
+            request = LiabilitiesGetRequest(access_token=plaid_item.access_token)
+            response = client.liabilities_get(request).to_dict()
+
+            rate = None
+            plaid_account_id_to_match = account.external_id
+
+            # Find the rate within the liabilities structure
+            if response.get('liabilities'):
+                target_liability = None
+                # Check mortgages
+                for mortgage in response['liabilities'].get('mortgage', []):
+                    if mortgage.get('account_id') == plaid_account_id_to_match:
+                        rate_percent = mortgage.get('interest_rate', {}).get('percentage')
+                        if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
+                        break
+                # Check student loans if not found yet
+                if rate is None:
+                    for student in response['liabilities'].get('student', []):
+                         if student.get('account_id') == plaid_account_id_to_match:
+                             rate_percent = student.get('interest_rate_percentage')
+                             if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
+                             break
+                # Check credit cards if not found yet (uses APRs array)
+                if rate is None:
+                    for credit in response['liabilities'].get('credit', []):
+                         if credit.get('account_id') == plaid_account_id_to_match:
+                             aprs = credit.get('aprs', [])
+                             if aprs: # Get first APR? Or specific type? Simplistic: take first.
+                                 rate_percent = aprs[0].get('apr_percentage')
+                                 if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
+                             break # Assume first card match is enough
+
+            if rate is not None:
+                return jsonify({"interest_rate": float(rate)}) # Return as float (decimal 0.055)
+            else:
+                return jsonify({"error": "Interest rate not found for this account via Plaid."}), 404
+
+        except ApiException as e:
+            current_app.logger.error(f"Plaid API error fetching liabilities for Item {plaid_item.item_id}: {getattr(e, 'body', e)}", exc_info=True)
+            return jsonify({"error": "Plaid API error fetching rate"}), 500
+        except Exception as e:
+            current_app.logger.error(f"Unexpected error fetching Plaid rate for Account {account_id}: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error"}), 500
+
     # --- Budget Summary Route ---
     @app.route('/api/budget/summary/<int:year>/<int:month>', methods=['GET'])
     def get_budget_summary(year, month):
