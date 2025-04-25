@@ -35,6 +35,7 @@ class PlaidService:
         cursor = item.sync_cursor # Load cursor from the DB item
         added_count, modified_count, removed_count = 0, 0, 0
         item_failed = False
+        print(f"Cursor val: ", cursor)
 
         if cursor == None: cursor = ""
 

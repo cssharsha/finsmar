@@ -9,6 +9,7 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.exceptions import ApiException
 
 from models import PlaidItem, Account, MarketPrice, Transaction
@@ -206,7 +207,7 @@ def register_routes(app):
 
                     for plaid_account in plaid_accounts:
                         plaid_account_id = plaid_account['account_id']
-                        account = Account.query.filter_by(external_id=plaid_account_id, source='Plaid').first() # Filter by source too
+                        account = Account.query.filter_by(external_id=plaid_account_id).first() # Filter by source too
                         current_app.logger.info(f"Processing current acount: {plaid_account_id}")
 
                         plaid_type_obj = plaid_account['type']
@@ -227,6 +228,8 @@ def register_routes(app):
                                 # Don't sync type/subtype typically unless necessary
                                 # account.account_type = plaid_account['type']
                                 # account.account_subtype = plaid_account['subtype']
+                                if account.plaid_item_id is None:
+                                    account.plaid_item_id = item.id
                                 accounts_synced_count += 1
                                 current_app.logger.debug(f"Updating Plaid account: {account.name} (ID: {account.id}), Bal: {balance}")
                         else: # Create depository/loan/credit accounts
@@ -235,6 +238,7 @@ def register_routes(app):
                                     external_id=plaid_account_id,
                                     name=plaid_account['name'],
                                     source='Plaid',
+                                    plaid_item_id = item.id,
                                     account_type=account_type_str,
                                     account_subtype=account_subtype_str,
                                     balance=balance )
@@ -286,12 +290,14 @@ def register_routes(app):
                             quantity = holding['quantity']
 
                             # Treat each security holding as an "Account" in our model
-                            account = Account.query.filter_by(external_id=security_id, source='PlaidInvestment').first()
+                            account = Account.query.filter_by(external_id=security_id).first()
 
                             if account:
                                 # Update holding quantity
                                 account.balance = quantity # Store quantity in balance
                                 account.name = ticker # Ensure name is up-to-date
+                                if account.plaid_item_id is None:
+                                    account.plaid_item_id = item.id
                                 holdings_synced_count += 1
                                 current_app.logger.debug(f"Updating Plaid holding: {ticker} (ID: {account.id}), Qty: {quantity}")
                             else:
@@ -299,6 +305,7 @@ def register_routes(app):
                                 new_account = Account(
                                     external_id=security_id, # Use Plaid security_id
                                     name=ticker,
+                                    plaid_item_id = item.id,
                                     source='PlaidInvestment', # Differentiate source
                                     account_type='investment',
                                     account_subtype=name, # Use security name as subtype
@@ -614,33 +621,18 @@ def register_routes(app):
         if account.account_type != 'loan' or not account.external_id or account.source not in ['Plaid', 'PlaidInvestment']: # Only for Plaid loans with external ID
             return jsonify({"error": "Account is not a Plaid-linked loan account"}), 400
 
-        # Find the associated PlaidItem (needs relationship or query)
-        # Simplistic query assuming external_id on Account matches Plaid account_id
-        # A direct relationship Account<->PlaidItem would be better.
-        # This assumes Plaid transactions were synced for this account's item.
-        transaction_for_account = Transaction.query.filter_by(plaid_account_id=account.external_id).first()
-        if not transaction_for_account:
-             # Alternative: Need a way to map Account back to PlaidItem more directly
-             # Maybe store item_id on Account? Or query PlaidItem based on user_id and check accounts list?
-             return jsonify({"error": "Cannot determine Plaid item linkage for this account"}), 500 # Improve this logic
-
-        # Assuming we found the transaction, infer item (this link is weak)
-        # Better: Query PlaidItem directly if possible, e.g., if you stored item_id on Account
-        plaid_item = PlaidItem.query.filter(
-             # How to link Account.id -> PlaidItem? Needs better DB design or query.
-             # Placeholder logic - THIS NEEDS REFINEMENT based on your data links
-             # PlaidItem.accounts.any(id=account_id) # If using relationship
-             # For now, assume we can get the item somehow...
-             PlaidItem.item_id == transaction_for_account.plaid_item_id # Requires adding item_id to Transaction model
-        ).first()
-
-        # ------> IMPORTANT: The above logic to find the PlaidItem from Account ID needs proper implementation <------
-        # For now, let's just fetch the FIRST PlaidItem for the user as a placeholder
-        plaid_item = PlaidItem.query.filter_by(user_id='finsmar-local-user-01').first()
+        plaid_item = account.plaid_item
         if not plaid_item:
-             return jsonify({"error": "Plaid item not found"}), 404
-        # <------ END IMPORTANT PLACEHOLDER ------>
+            # This can happen if the account wasn't synced correctly after migrations
+            # or if it's not a Plaid-linked account
+            current_app.logger.error(f"Could not find linked PlaidItem for Account ID: {account_id}")
+            return jsonify({"error": "Plaid item linkage not found for this account"}), 404
 
+        access_token = plaid_item.access_token
+        plaid_account_id_to_match = account.external_id # Plaid's account_id
+
+        if not plaid_account_id_to_match:
+             return jsonify({"error": "Account is missing Plaid external ID"}), 400
 
         try:
             client = current_app.extensions['plaid_client']
@@ -686,6 +678,86 @@ def register_routes(app):
             return jsonify({"error": "Plaid API error fetching rate"}), 500
         except Exception as e:
             current_app.logger.error(f"Unexpected error fetching Plaid rate for Account {account_id}: {e}", exc_info=True)
+            return jsonify({"error": "Internal server error"}), 500
+
+    @app.route('/api/accounts/<int:account_id>/fetch_plaid_card_details', methods=['GET'])
+    def fetch_plaid_card_details(account_id):
+        """
+        Attempts to fetch detailed liability info (APR, balances, due dates)
+        for a specific credit card account via Plaid.
+        """
+        account = Account.query.get_or_404(account_id)
+        if account.account_type != 'credit':
+            return jsonify({"error": "Account is not a credit card account"}), 400
+
+        plaid_item = account.plaid_item # Use relationship established earlier
+        if not plaid_item:
+             current_app.logger.error(f"Could not find linked PlaidItem for Account ID: {account_id}")
+             return jsonify({"error": "Plaid item linkage not found for this account"}), 404
+
+        access_token = plaid_item.access_token
+        plaid_account_id_to_match = account.external_id # Plaid's account_id
+
+        if not plaid_account_id_to_match:
+             return jsonify({"error": "Account is missing Plaid external ID"}), 400
+
+        try:
+            client = current_app.extensions['plaid_client']
+            request = LiabilitiesGetRequest(access_token=access_token)
+            response = client.liabilities_get(request).to_dict()
+
+            card_details = None
+            if response.get('liabilities') and response['liabilities'].get('credit'):
+                for credit_card in response['liabilities']['credit']:
+                    if credit_card.get('account_id') == plaid_account_id_to_match:
+                        card_details = credit_card # Found the matching card
+                        break
+
+            if card_details:
+                # Extract desired info
+                apr_percent = None
+                # Find the purchase APR preferentially, fallback to first APR if not found
+                purchase_apr_info = next((apr for apr in card_details.get('aprs', []) if apr.get('apr_type') == 'purchase_apr'), None)
+                if purchase_apr_info:
+                    apr_percent = purchase_apr_info.get('apr_percentage')
+                elif card_details.get('aprs'): # Fallback to the first APR listed
+                    apr_percent = card_details['aprs'][0].get('apr_percentage')
+
+                result = {
+                    "apr_percent": apr_percent, # Annual Percentage Rate (as percentage, e.g., 19.99)
+                    "statement_balance": card_details.get('last_statement_balance'),
+                    "minimum_payment": card_details.get('minimum_payment_amount'),
+                    "next_due_date": card_details.get('next_payment_due_date'),
+                    "last_statement_date": card_details.get('last_statement_issue_date'),
+                     # Add more fields if needed, e.g., balance_subject_to_apr
+                }
+                # Convert None values explicitly if necessary, though jsonify handles it
+                for key, value in result.items():
+                    if value is None: result[key] = None # Or keep as None
+
+                return jsonify(result)
+            else:
+                return jsonify({"error": "Credit card details not found for this account via Plaid."}), 404
+
+        except ApiException as e:
+            # Check for specific error codes if needed (e.g., PRODUCT_NOT_READY)
+             body = getattr(e, 'body', None)
+             error_code = None
+             if body:
+                  try:
+                      error_data = json.loads(body) if isinstance(body, str) else body
+                      error_code = error_data.get('error_code')
+                  except: pass # Ignore parsing errors
+
+             if error_code == 'PRODUCT_NOT_READY':
+                 return jsonify({"error": "Liabilities data not ready for this item. Try again later."}), 503
+             elif error_code in ['PRODUCTS_NOT_SUPPORTED', 'ITEM_NOT_SUPPORTED', 'NO_LIABILITY_ACCOUNTS']:
+                 return jsonify({"error": f"Liabilities product not supported or no liability accounts found for this item ({error_code})."}), 400
+
+             current_app.logger.error(f"Plaid API error fetching liabilities for Item {plaid_item.item_id}: {body}", exc_info=True)
+             return jsonify({"error": "Plaid API error fetching card details"}), 500
+        except Exception as e:
+            current_app.logger.error(f"Unexpected error fetching Plaid card details for Account {account_id}: {e}", exc_info=True)
             return jsonify({"error": "Internal server error"}), 500
 
     # --- Budget Summary Route ---
@@ -1255,7 +1327,7 @@ def register_routes(app):
         if not scheduler or not scheduler.running:
             return jsonify({'error': 'Scheduler not running or not available'}), 503 # Service Unavailable
 
-        job_id = 'price_fetch_job' # The ID we gave the job in app.py
+        job_id = 'background_sync_job' # The ID we gave the job in app.py
         try:
             # Option 1: Modify next_run_time to run ASAP (preferred for background execution)
             scheduler.modify_job(job_id, next_run_time=datetime.datetime.now(datetime.timezone.utc))

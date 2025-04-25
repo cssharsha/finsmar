@@ -161,7 +161,7 @@ def create_app(config_class=Config):
     scheduler = BackgroundScheduler(daemon=True, timezone='UTC')
     # Schedule job to run immediately and then every 30 minutes (adjust interval as needed)
     # Pass the app instance to the job function to establish context correctly
-    scheduler.add_job(background_sync_job, trigger='interval', args=[app], minutes=30, id='', replace_existing=True, misfire_grace_time=600)
+    scheduler.add_job(background_sync_job, trigger='interval', args=[app], minutes=30, id='background_sync_job', replace_existing=True, misfire_grace_time=600)
     # Consider running once immediately on startup as well?
     # scheduler.add_job(fetch_and_update_prices, args=[app], id='price_fetch_job_startup', replace_existing=True)
     scheduler.start()

@@ -31,6 +31,9 @@ class Account(db.Model):
     loan_original_amount = db.Column(db.Numeric(12, 2), nullable=True)
     loan_interest_rate = db.Column(db.Numeric(5, 4), nullable=True) # Store as decimal, e.g., 0.05 for 5%
 
+    plaid_item_id = db.Column(db.Integer, ForeignKey('plaid_item.id'), nullable=True, index=True)
+    plaid_item = relationship('PlaidItem', back_populates='accounts')
+
     def to_dict(self):
         """Returns a dictionary representation of the account."""
         return {
@@ -47,8 +50,9 @@ class Account(db.Model):
             'loan_interest_rate': float(self.loan_interest_rate) if self.loan_interest_rate is not None else None,
             # -----------------------
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
-            # Add transaction count or other relevant summary data if needed later
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'loan_interest_rate': float(self.loan_interest_rate) if self.loan_interest_rate is not None else None,
+            'plaid_item_id': self.plaid_item_id # Add if useful for frontend
         }
 
     def __repr__(self):
@@ -72,6 +76,7 @@ class PlaidItem(db.Model):
     created_at = db.Column(db.DateTime, server_default=db.func.now())
     updated_at = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
     sync_cursor = db.Column(db.String(255), nullable=True)
+    accounts = relationship('Account', back_populates='plaid_item', lazy='dynamic', cascade="all, delete-orphan")
 
     def __repr__(self):
         return f'<PlaidItem {self.item_id} (User: {self.user_id})>'
