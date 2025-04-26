@@ -377,6 +377,71 @@ def register_routes(app):
              current_app.logger.error(f"Unexpected error during Plaid sync: {e}", exc_info=True)
              return jsonify({'error': 'Internal server error during sync'}), 500
 
+    # --- Route to Create Manual Account ---
+    @app.route('/api/accounts', methods=['POST'])
+    def add_manual_account():
+        """Adds a new account manually."""
+        data = request.json
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        # --- Basic Validation ---
+        required_fields = ['name', 'account_type', 'balance'] # Minimum required
+        missing_fields = [f for f in required_fields if f not in data or data[f] is None]
+        if missing_fields:
+            return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+
+        account_type = data.get('account_type')
+        allowed_types = ['depository', 'credit', 'loan', 'investment', 'crypto', 'other'] # Define allowed types
+        if account_type not in allowed_types:
+             return jsonify({"error": f"Invalid account_type. Allowed types: {', '.join(allowed_types)}"}), 400
+
+        try:
+            # --- Create Account Instance ---
+            new_account = Account(
+                name=data['name'],
+                source='Manual', # Mark source as Manual
+                account_type=account_type,
+                # Balance means monetary value for most, quantity for investment/crypto
+                balance=decimal.Decimal(data['balance']),
+                # Subtype is often symbol for investment/crypto, or type like Checking/Savings
+                account_subtype=data.get('account_subtype'),
+                # External ID is null for manual accounts
+                external_id=None
+            )
+
+            # --- Add Loan Specific Fields if applicable ---
+            if account_type == 'loan':
+                if data.get('loan_monthly_payment') is not None:
+                    new_account.loan_monthly_payment = decimal.Decimal(data['loan_monthly_payment'])
+                if data.get('loan_original_amount') is not None:
+                    new_account.loan_original_amount = decimal.Decimal(data['loan_original_amount'])
+                if data.get('loan_interest_rate') is not None:
+                    # Expect rate as decimal (e.g., 0.05 for 5%) from frontend maybe? Or adjust here.
+                    # Let's assume frontend sends decimal representation string or null
+                    new_account.loan_interest_rate = decimal.Decimal(data['loan_interest_rate'])
+
+            # --- Add to DB and Commit ---
+            db.session.add(new_account)
+            db.session.commit()
+            current_app.logger.info(f"Manually added account '{new_account.name}' (ID: {new_account.id})")
+
+            # Return the created account data using its to_dict method
+            return jsonify(new_account.to_dict()), 201 # 201 Created status
+
+        except (ValueError, decimal.InvalidOperation, TypeError) as e:
+             db.session.rollback()
+             current_app.logger.error(f"Data format error adding manual account: {e}", exc_info=True)
+             return jsonify({"error": "Invalid data format (numeric fields must be numbers)"}), 400
+        except (SQLAlchemyError, IntegrityError) as e:
+             db.session.rollback()
+             current_app.logger.error(f"Database error adding manual account: {e}", exc_info=True)
+             return jsonify({"error": "Database error adding account"}), 500
+        except Exception as e:
+             db.session.rollback()
+             current_app.logger.error(f"Unexpected error adding manual account: {e}", exc_info=True)
+             return jsonify({"error": "Internal server error"}), 500
+
     # --- Route to Get Unique Budget Categories ---
     @app.route('/api/budget/categories', methods=['GET'])
     def get_budget_categories():
@@ -616,10 +681,29 @@ def register_routes(app):
     # --- Add Route to Fetch Plaid Loan Rate ---
     @app.route('/api/accounts/<int:account_id>/fetch_plaid_rate', methods=['GET'])
     def fetch_plaid_loan_rate(account_id):
-        """Attempts to fetch the interest rate for a specific loan account via Plaid."""
+        """
+        Attempts to fetch the interest rate for a specific loan account.
+        For Plaid-linked accounts, fetches from Plaid API.
+        For manually added accounts, returns the stored rate from the database.
+        """
         account = Account.query.get_or_404(account_id)
-        if account.account_type != 'loan' or not account.external_id or account.source not in ['Plaid', 'PlaidInvestment']: # Only for Plaid loans with external ID
-            return jsonify({"error": "Account is not a Plaid-linked loan account"}), 400
+        current_app.logger.info(f"Getting rate for account {account_id}")
+        
+        # Check if this is a loan account
+        if account.account_type != 'loan':
+            return jsonify({"error": "Account is not a loan account"}), 400
+            
+        # For manually added accounts, return the stored rate directly
+        if account.source == 'Manual':
+            current_app.logger.info(f"Returning stored rate for manual account {account_id}")
+            if account.loan_interest_rate is not None:
+                return jsonify({"interest_rate": float(account.loan_interest_rate)})
+            else:
+                return jsonify({"error": "No interest rate stored for this manual account"}), 404
+                
+        # For Plaid accounts, continue with API fetch
+        if not account.external_id or account.source not in ['Plaid', 'PlaidInvestment']:
+            return jsonify({"error": "Account is not a properly configured Plaid-linked loan account"}), 400
 
         plaid_item = account.plaid_item
         if not plaid_item:
@@ -632,46 +716,84 @@ def register_routes(app):
         plaid_account_id_to_match = account.external_id # Plaid's account_id
 
         if not plaid_account_id_to_match:
-             return jsonify({"error": "Account is missing Plaid external ID"}), 400
+            current_app.logger.warning(f"Account is missing Plaid external ID")
+            return jsonify({"error": "Account is missing Plaid external ID"}), 400
 
         try:
             client = current_app.extensions['plaid_client']
-            request = LiabilitiesGetRequest(access_token=plaid_item.access_token)
+            request = LiabilitiesGetRequest(access_token=plaid_item.access_token).to_dict()
             response = client.liabilities_get(request).to_dict()
+            current_app.logger.info(f"Resonse: {response} Request: {request}")
 
             rate = None
             plaid_account_id_to_match = account.external_id
 
-            # Find the rate within the liabilities structure
-            if response.get('liabilities'):
-                target_liability = None
+            liabilities_data = response.get('liabilities') # Safely get liabilities object/None
+            current_app.logger.info(f"Current liabilities: {liabilities_data}")
+            current_app.logger.info(f"Type of liabilities_data: {type(liabilities_data)}")
+            if liabilities_data and isinstance(liabilities_data, dict):
+                current_app.logger.info(f"Processing liabilities data for Account {account_id}")
+                # Now we can safely access mortgage, student, credit keys
+
                 # Check mortgages
-                for mortgage in response['liabilities'].get('mortgage', []):
-                    if mortgage.get('account_id') == plaid_account_id_to_match:
-                        rate_percent = mortgage.get('interest_rate', {}).get('percentage')
-                        if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
-                        break
+                mortgages = liabilities_data.get('mortgage', [])
+                current_app.logger.info(f"mortgages: {mortgages}")
+                if mortgages is not None:
+                    for mortgage in liabilities_data.get('mortgage', []): # Use .get() here too
+                        if mortgage.get('account_id') == plaid_account_id_to_match:
+                            rate_percent = mortgage.get('interest_rate', {}).get('percentage')
+                            if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
+                            break # Found rate, exit mortgage loop
+
                 # Check student loans if not found yet
                 if rate is None:
-                    for student in response['liabilities'].get('student', []):
-                         if student.get('account_id') == plaid_account_id_to_match:
-                             rate_percent = student.get('interest_rate_percentage')
-                             if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
-                             break
-                # Check credit cards if not found yet (uses APRs array)
+                    student_loans = liabilities_data.get('student', [])
+                    if student_loans is not None:
+                        for student in liabilities_data.get('student', []): # Use .get()
+                            if student.get('account_id') == plaid_account_id_to_match:
+                                rate_percent = student.get('interest_rate_percentage')
+                                if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
+                                break # Found rate, exit student loop
+
+                # Check credit cards if not found yet
                 if rate is None:
-                    for credit in response['liabilities'].get('credit', []):
-                         if credit.get('account_id') == plaid_account_id_to_match:
-                             aprs = credit.get('aprs', [])
-                             if aprs: # Get first APR? Or specific type? Simplistic: take first.
-                                 rate_percent = aprs[0].get('apr_percentage')
-                                 if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
-                             break # Assume first card match is enough
+                    credits = liabilities_data.get('credit', [])
+                    if credits is not None:
+                        for credit in liabilities_data.get('credit', []): # Use .get()
+                            if credit.get('account_id') == plaid_account_id_to_match:
+                                # ... (logic to extract APR from credit['aprs']) ...
+                                aprs = credit.get('aprs', [])
+                                purchase_apr_info = next((apr for apr in aprs if apr.get('apr_type') == 'purchase_apr'), None)
+                                if purchase_apr_info:
+                                    rate_percent = purchase_apr_info.get('apr_percentage')
+                                elif aprs: rate_percent = aprs[0].get('apr_percentage')
+                                else: rate_percent = None
+                                if rate_percent is not None: rate = decimal.Decimal(rate_percent) / 100
+                                break # Found rate (or determined none available), exit credit loop
+            else:
+                # Log if the 'liabilities' key itself was missing or null
+                current_app.logger.warning(f"Plaid response did not contain valid 'liabilities' data for Item {plaid_item.item_id}")
 
             if rate is not None:
+                # If we found a rate from Plaid, update the stored rate in our database
+                if account.loan_interest_rate != rate:
+                    try:
+                        account.loan_interest_rate = rate
+                        db.session.commit()
+                        current_app.logger.info(f"Updated stored interest rate for account {account_id} to {rate}")
+                    except Exception as e:
+                        db.session.rollback()
+                        current_app.logger.error(f"Failed to update stored interest rate: {e}", exc_info=True)
+                        # Continue anyway to return the rate to the user
+                
                 return jsonify({"interest_rate": float(rate)}) # Return as float (decimal 0.055)
             else:
-                return jsonify({"error": "Interest rate not found for this account via Plaid."}), 404
+                # If Plaid doesn't have the rate but we have one stored, return that
+                if account.loan_interest_rate is not None:
+                    current_app.logger.info(f"Using stored rate {account.loan_interest_rate} for account {account_id} as Plaid rate not found")
+                    return jsonify({"interest_rate": float(account.loan_interest_rate)})
+                else:
+                    return jsonify({"error": "Interest rate not found for this account via Plaid."}), 404
 
         except ApiException as e:
             current_app.logger.error(f"Plaid API error fetching liabilities for Item {plaid_item.item_id}: {getattr(e, 'body', e)}", exc_info=True)

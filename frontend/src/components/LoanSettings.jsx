@@ -52,6 +52,24 @@ function calculatePaybackTime(principal, annualRatePercent, monthlyPayment) {
      return { years, months };
 }
 
+// Helper to convert DB decimal rate (e.g., 0.055) to % string ('5.5')
+const formatRateToPercentString = (decimalRate) => {
+    if (decimalRate === null || decimalRate === undefined) return '';
+    try {
+        // Multiply by 100, handle potential floating point issues, format
+        return (Number(decimalRate) * 100).toFixed(4); // Keep good precision for editing
+    } catch { return ''; }
+};
+ // Helper to convert % string ('5.5') to decimal string ('0.055') for saving
+ const formatPercentStringToDecimalString = (percentString) => {
+     if (!percentString || String(percentString).trim() === '') return null;
+     try {
+         const rate = parseFloat(percentString);
+         if (isNaN(rate)) return null;
+         return String(rate / 100.0);
+     } catch { return null; }
+ };
+
 const LoanSettings = () => {
     const [loanAccounts, setLoanAccounts] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -79,59 +97,6 @@ const LoanSettings = () => {
     // }
     const [fetchingRateId, setFetchingRateId] = useState(null); // Track which rate is being fetched
 
-    // Fetch all account data on mount to filter loans
-    const fetchAndInitialize = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            // Use the overview endpoint which includes account type
-            const response = await axios.get(`${API_BASE_URL}/api/portfolio/overview`);
-            const allAccounts = response.data?.account_details || [];
-            const loans = allAccounts.filter(acc => acc.type === 'loan');
-            setLoanAccounts(loans);
-
-            // Initialize state for each loan account
-            const initialStates = {};
-            loans.forEach(acc => {
-                initialStates[acc.id] = {
-                    balance: acc.balance ?? 0,
-                    rateInput: acc.loan_interest_rate !== null ? String(acc.loan_interest_rate * 100) : '', // Convert decimal rate TO percentage string for input
-                    durationInput: '', // Start duration empty
-                    paymentInput: acc.loan_monthly_payment !== null ? String(acc.loan_monthly_payment) : '', // User's chosen payment
-                    calculatedPayment: null,
-                    paybackTime: null,
-                    isSaving: false,
-                    message: null,
-                    // Store original fetched values to check for changes
-                    originalRate: acc.loan_interest_rate !== null ? String(acc.loan_interest_rate * 100) : '',
-                    originalPayment: acc.loan_monthly_payment !== null ? String(acc.loan_monthly_payment) : ''
-                };
-                // Initial calculation if possible
-                 initialStates[acc.id].calculatedPayment = calculateMonthlyPayment(
-                       initialStates[acc.id].balance,
-                       parseFloat(initialStates[acc.id].rateInput || 0),
-                       parseFloat(initialStates[acc.id].durationInput || 0)
-                 );
-                 initialStates[acc.id].paybackTime = calculatePaybackTime(
-                       initialStates[acc.id].balance,
-                       parseFloat(initialStates[acc.id].rateInput || 0),
-                       parseFloat(initialStates[acc.id].paymentInput || 0)
-                 );
-            });
-            setAccountState(initialStates);
-
-        } catch (err) {
-            console.error("Error fetching accounts for loan settings:", err);
-            setError("Could not load account data.");
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        fetchAndInitialize();
-    }, [fetchAndInitialize]);
-
     // --- Recalculate derived values when inputs change ---
     const recalculateForAccount = (accountId, currentState) => {
          const balance = currentState.balance;
@@ -149,21 +114,76 @@ const LoanSettings = () => {
          };
     };
 
+    // Fetch all account data on mount to filter loans
+    const fetchAndInitialize = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            // Use the overview endpoint which includes account type
+            const response = await axios.get(`${API_BASE_URL}/api/portfolio/overview`);
+            const allAccounts = response.data?.account_details || [];
+            const loans = allAccounts.filter(acc => acc.type === 'loan');
+            setLoanAccounts(loans);
+
+            // Initialize state for each loan account
+            const initialStates = {};
+            loans.forEach(acc => {
+                const dbRate = acc.loan_interest_rate; // Raw decimal from DB (e.g., 0.055)
+                const dbPayment = acc.loan_monthly_payment; // Raw number from DB
+
+                initialStates[acc.id] = {
+                    balance: acc.balance ?? 0,
+                    rateInput: formatRateToPercentString(dbRate), // Convert decimal rate TO percentage string for input
+                    durationInput: '', // Start duration empty
+                    paymentInput: dbPayment !== null ? String(dbPayment) : '', // User's chosen payment
+                    durationInput: '',
+                    // Store original DB values to compare for changes
+                    dbRate: dbRate,
+                    dbPayment: dbPayment,
+                    // Initialize others
+                    calculatedPayment: null, paybackTime: null,
+                    isSaving: false, isFetchingRate: false, message: null
+                };
+                // Perform initial calculation based on DB values / empty inputs
+                initialStates[acc.id] = recalculateForAccount(acc.id, initialStates[acc.id]);
+            });
+            setAccountState(initialStates);
+
+        } catch (err) {
+            console.error("Error fetching accounts for loan settings:", err);
+            setError("Could not load account data.");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchAndInitialize();
+    }, [fetchAndInitialize]);
+
     // --- Handler for Fetching Rate ---
     const handleFetchRate = async (accountId) => {
-        setFetchingRateId(accountId); // Show loading state for this button
-        // Clear previous message for this account
-        setAccountState(prev => ({...prev, [accountId]: {...prev[accountId], message: null}}));
+        setAccountState(prev => ({ ...prev, [accountId]: {...prev[accountId], isFetchingRate: true, message: null} }));
         try {
             const response = await axios.get(`${API_BASE_URL}/api/accounts/${accountId}/fetch_plaid_rate`);
             if (response.data && response.data.interest_rate !== null) {
-                const ratePercent = (response.data.interest_rate * 100).toFixed(4); // Convert decimal to % string
-                // Update the input field state
-                handleInputChange(accountId, 'rateInput', ratePercent);
-                 setMessageStates(prev => ({...prev, [accountId]: { type: 'success', text: 'Rate fetched!' }}));
-                 setTimeout(() => setMessageStates(prev => ({ ...prev, [accountId]: null })), 3000);
+                const fetchedDecimalRate = response.data.interest_rate;
+                const fetchedRatePercentStr = formatRateToPercentString(fetchedDecimalRate);
+
+                // Update the input field *and* recalculate
+                setAccountState(prev => {
+                     const updatedState = {
+                          ...prev[accountId],
+                          rateInput: fetchedRatePercentStr, // Update input with fetched rate
+                          isFetchingRate: false,
+                          message: { type: 'success', text: 'Rate fetched!' }
+                     };
+                     const recalculatedState = recalculateForAccount(accountId, updatedState);
+                     return { ...prev, [accountId]: recalculatedState };
+                });
+                setTimeout(() => setAccountState(prev => ({ ...prev, [accountId]: {...prev[accountId], message: null} })), 3000);
             } else {
-                 setMessageStates(prev => ({...prev, [accountId]: { type: 'error', text: response.data.error || 'Rate not available' }}));
+                 setAccountState(prev => ({ ...prev, [accountId]: {...prev[accountId], isFetchingRate: false, message: { type: 'info', text: response.data.error || 'Rate not available' } } }));
             }
         } catch (err) {
              console.error(`Error fetching Plaid rate for account ${accountId}:`, err.response?.data || err);
@@ -176,15 +196,10 @@ const LoanSettings = () => {
     // Handle changes in any input field for a specific loan
     const handleInputChange = (accountId, fieldName, value) => {
         setAccountState(prev => {
-            const newState = {
-                ...prev,
-                [accountId]: recalculateForAccount(accountId, {
-                    ...prev[accountId],
-                    [fieldName]: value,
-                    message: null // Clear message on input change
-                })
-            };
-            return newState;
+             // Update the specific field and then recalculate dependent values
+            const updatedState = { ...prev[accountId], [fieldName]: value, message: null };
+            const recalculatedState = recalculateForAccount(accountId, updatedState);
+            return { ...prev, [accountId]: recalculatedState };
         });
     };
 
@@ -197,39 +212,36 @@ const LoanSettings = () => {
 
         try {
             // Convert rate from % string to decimal string or null for backend
-            let rateDecimal = null;
-            if (currentDetails.rateInput.trim() !== '') {
-                 rateDecimal = String(parseFloat(currentDetails.rateInput) / 100.0);
-            }
+            const rateDecimalString = formatPercentStringToDecimalString(currentDetails.rateInput);
+             const paymentValue = currentDetails.paymentInput.trim() === '' ? null : currentDetails.paymentInput;
 
             const payload = {
-                // Send user's chosen payment (allow null)
-                loan_monthly_payment: currentDetails.paymentInput.trim() === '' ? null : currentDetails.paymentInput,
-                // Send interest rate (allow null)
-                loan_interest_rate: rateDecimal
-                // We don't save duration or original amount currently
+                loan_interest_rate: rateDecimalString,
+                loan_monthly_payment: paymentValue
             };
 
             const response = await axios.put(`${API_BASE_URL}/api/accounts/${accountId}`, payload);
 
-            // Update state with saved values from response to ensure consistency
-            const updatedRateStr = response.data.loan_interest_rate !== null ? String(response.data.loan_interest_rate * 100) : '';
-            const updatedPaymentStr = response.data.loan_monthly_payment !== null ? String(response.data.loan_monthly_payment) : '';
+            // Update state with successfully saved values from response
+            const savedRate = response.data.loan_interest_rate;
+            const savedPayment = response.data.loan_monthly_payment;
+            const savedRateStr = formatRateToPercentString(savedRate);
+            const savedPaymentStr = savedPayment !== null ? String(savedPayment) : '';
 
-            setAccountState(prev => ({
-                 ...prev,
-                 [accountId]: recalculateForAccount(accountId, {
-                     ...prev[accountId],
-                     isSaving: false,
-                     message: { type: 'success', text: 'Saved!' },
-                     // Update inputs to match saved state
-                     rateInput: updatedRateStr,
-                     paymentInput: updatedPaymentStr,
-                     // Update original values to prevent immediate re-save
-                     originalRate: updatedRateStr,
-                     originalPayment: updatedPaymentStr
-                 })
-             }));
+            setAccountState(prev => {
+                 const updatedState = {
+                      ...prev[accountId],
+                      isSaving: false,
+                      message: { type: 'success', text: 'Saved!' },
+                      // Update inputs AND db values to match saved state
+                      rateInput: savedRateStr,
+                      paymentInput: savedPaymentStr,
+                      dbRate: savedRate,
+                      dbPayment: savedPayment,
+                 };
+                 const recalculatedState = recalculateForAccount(accountId, updatedState);
+                 return { ...prev, [accountId]: recalculatedState };
+             });
             setTimeout(() => setAccountState(prev => ({ ...prev, [accountId]: {...prev[accountId], message: null} })), 3000);
         } catch (err) {
             console.error(`Error updating payment for account ${accountId}:`, err.response?.data || err);
@@ -320,8 +332,8 @@ const LoanSettings = () => {
 
                                     {/* Save Button & Messages */}
                                     <div>
-                                        <button onClick={() => handleSaveLoanDetails(acc.id)} disabled={isSaving || !isChanged}>
-                                            {isSaving ? 'Saving...' : 'Save Details'}
+                                        <button onClick={() => handleSaveLoanDetails(acc.id)} disabled={isSaving || !isChanged}> {/* Only enable if changed */}
+                                            {isSaving ? 'Saving...' : 'Save Rate/Payment'}
                                         </button>
                                         {message && ( <span style={{ color: message.type === 'success' ? 'green' : 'red', marginLeft: '10px' }}> {message.text} </span> )}
                                     </div>

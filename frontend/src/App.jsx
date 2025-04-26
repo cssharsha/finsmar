@@ -8,6 +8,7 @@ import BudgetSummary from './components/BudgetSummary';
 import TransactionsPage from './pages/TransactionsPage'; // We will create this page
 import SettingsPage from './pages/SettingsPage';
 import BudgetCalculationDisplay from './components/BudgetCalculationDisplay';
+import AddAccountPage from './pages/AddAccountPage';
 
 function App() {
   const currentDate = new Date();
@@ -20,7 +21,8 @@ function App() {
       <nav style={{ marginBottom: '20px', borderBottom: '1px solid #ccc', paddingBottom: '10px' }}>
         <Link to="/" style={{ marginRight: '15px' }}>Dashboard</Link>
         <Link to="/transactions" style={{ marginRight: '15px' }}>Transactions</Link>
-        <Link to="/settings">Settings</Link>
+        <Link to="/settings" style={{ marginRight: '15px' }}>Settings</Link>
+        <Link to="/add-account">Add Account</Link>
         {/* Add more links later */}
       </nav>
 
@@ -46,6 +48,7 @@ function App() {
         {/* Route for the Transactions Page */}
         <Route path="/transactions" element={<TransactionsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/add-account" element={<AddAccountPage />} />
 
         {/* Add more routes later */}
       </Routes>
